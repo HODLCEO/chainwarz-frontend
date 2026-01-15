@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, Send, ExternalLink, Trophy, Shield, Swords, Crown } from 'lucide-react';
+import { sdk } from '@farcaster/miniapp-sdk';
 
 // Detect if in Farcaster
 const isFarcaster = typeof window !== 'undefined' && (
   window.parent !== window || 
-  window.ethereum?.isFarcaster ||
   window.location !== window.parent.location
 );
 
@@ -56,61 +56,25 @@ export default function App() {
 
   useEffect(() => {
     // Initialize Farcaster SDK properly
-    let sdkInitialized = false;
-    
-    const initFarcasterSDK = () => {
-      if (sdkInitialized) return;
-      
-      // Check if we're in Farcaster context
-      if (window.parent !== window) {
-        console.log('In Farcaster iframe, initializing SDK...');
-        
-        // Wait for SDK to be available
-        const checkSDK = setInterval(() => {
-          if (window.frameSDK || window.sdk) {
-            const sdk = window.frameSDK || window.sdk;
-            
-            try {
-              // Call ready
-              if (sdk.actions && sdk.actions.ready) {
-                sdk.actions.ready({});
-                console.log('Farcaster SDK ready() called');
-              } else if (sdk.ready) {
-                sdk.ready();
-                console.log('Farcaster SDK ready() called (alt)');
-              }
-              
-              sdkInitialized = true;
-              clearInterval(checkSDK);
-            } catch (e) {
-              console.error('Error calling ready():', e);
-            }
-          }
-        }, 100);
-        
-        // Stop checking after 5 seconds
-        setTimeout(() => {
-          clearInterval(checkSDK);
-          if (!sdkInitialized) {
-            console.warn('Farcaster SDK not found after 5s');
-          }
-        }, 5000);
+    const initApp = async () => {
+      try {
+        // Check if we're in Farcaster context
+        if (isFarcaster) {
+          console.log('Initializing Farcaster Mini App SDK...');
+          // Call ready() to hide splash screen
+          await sdk.actions.ready();
+          console.log('Farcaster SDK ready() called successfully');
+        }
+      } catch (error) {
+        console.error('Error initializing Farcaster SDK:', error);
       }
+      
+      // Initialize app regardless of Farcaster context
+      checkConnection();
+      loadLeaderboard();
     };
     
-    // Try immediately
-    initFarcasterSDK();
-    
-    // Also try on load
-    window.addEventListener('load', initFarcasterSDK);
-    
-    // Initialize app
-    checkConnection();
-    loadLeaderboard();
-
-    return () => {
-      window.removeEventListener('load', initFarcasterSDK);
-    };
+    initApp();
   }, []);
 
   const checkConnection = async () => {
