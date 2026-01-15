@@ -1,262 +1,228 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Wallet, ExternalLink, Shield, Swords, Crown } from 'lucide-react';
-import { sdk } from '@farcaster/miniapp-sdk';
+import React, { useEffect, useMemo, useState } from "react";
+import { Crown, ExternalLink, Shield, Swords, Wallet } from "lucide-react";
+import sdk from "@farcaster/miniapp-sdk";
 
+// Backend URL (Vercel env var VITE_BACKEND_URL is preferred)
 const BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL || 'https://chainwarz-backend-production.up.railway.app';
+  import.meta.env.VITE_BACKEND_URL ||
+  "https://chainwarz-backend-production.up.railway.app";
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function toHexWei(bi) {
-  return '0x' + bi.toString(16);
-}
-
-function shortAddr(a) {
-  if (!a) return '';
-  return `${a.slice(0, 6)}...${a.slice(-4)}`;
-}
-
-// ✅ Per-chain strike amounts (BigInt exact)
-const STRIKE_WEI = {
-  // Base stays on the contract-verified exact amount you just confirmed works:
-  base: 1337420690000n,        // 0.00000133742069 ETH
-  // HyperEVM requested change:
-  hyperevm: 133700000000000n,  // 0.0001337 HYPE
-};
-
-const STRIKE_DECIMAL = {
-  base: '0.00000133742069',
-  hyperevm: '0.0001337',
-};
+// Simple host detection (good enough for UI toggles)
+const isInIframe =
+  typeof window !== "undefined" &&
+  (window.parent !== window || window.location !== window.parent.location);
 
 const CHAINS = {
   base: {
-    caip2: 'eip155:8453',
-    idHex: '0x2105',
-    name: 'Base',
-    rpcUrl: 'https://mainnet.base.org',
-    blockExplorer: 'https://basescan.org',
-    contractAddress: '0xB2B23e69b9d811D3D43AD473f90A171D18b19aab',
-    strikeAmountDecimal: STRIKE_DECIMAL.base,
-    strikeSymbol: 'ETH',
+    key: "base",
+    chainIdHex: "0x2105", // 8453
+    name: "Base",
+    rpcUrl: "https://mainnet.base.org",
+    blockExplorer: "https://basescan.org",
+    contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
+    strikeLabel: "0.000001337 ETH",
+    // 0.000001337 ETH = 1,337,000,000,000 wei
+    valueWei: 1337000000000n,
+    nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   },
   hyperevm: {
-    caip2: 'eip155:999',
-    idHex: '0x3e7',
-    name: 'HyperEVM',
-    rpcUrl: 'https://rpc.hyperliquid.xyz/evm',
-    blockExplorer: 'https://hyperevmscan.io',
-    // ✅ requested new contract address
-    contractAddress: '0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02',
-    // ✅ requested strike price
-    strikeAmountDecimal: STRIKE_DECIMAL.hyperevm,
-    strikeSymbol: 'HYPE',
+    key: "hyperevm",
+    chainIdHex: "0xd0d4", // keep your existing chain id as used in-app
+    name: "HyperEVM",
+    rpcUrl: "https://rpc.hyperliquid.xyz/evm",
+    blockExplorer: "https://hyperevmscan.io",
+    // UPDATED per your message:
+    contractAddress: "0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02",
+    strikeLabel: "0.0001337 HYPE",
+    // 0.0001337 with 18 decimals = 133,700,000,000,000 wei
+    valueWei: 133700000000000n,
+    nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
   },
 };
 
 const RANKS = [
-  { name: 'Squire', minStrikes: 0, color: 'text-gray-400' },
-  { name: 'Knight', minStrikes: 100, color: 'text-blue-400' },
-  { name: 'Knight Captain', minStrikes: 250, color: 'text-purple-400' },
-  { name: 'Baron', minStrikes: 500, color: 'text-yellow-400' },
-  { name: 'Duke', minStrikes: 1000, color: 'text-orange-400' },
-  { name: 'Warlord', minStrikes: 2500, color: 'text-red-400' },
-  { name: 'Legendary Champion', minStrikes: 5000, color: 'text-pink-400' },
+  { name: "Squire", min: 0, className: "text-gray-300" },
+  { name: "Knight", min: 1, className: "text-blue-300" },
+  { name: "Knight Captain", min: 5, className: "text-purple-300" },
+  { name: "Baron", min: 10, className: "text-yellow-300" },
+  { name: "Duke", min: 25, className: "text-orange-300" },
+  { name: "Warlord", min: 50, className: "text-red-300" },
+  { name: "Legendary Champion", min: 100, className: "text-pink-300" },
 ];
 
-function getRank(strikeCount) {
+function getRank(totalStrikes) {
   for (let i = RANKS.length - 1; i >= 0; i--) {
-    if (strikeCount >= RANKS[i].minStrikes) return RANKS[i];
+    if (totalStrikes >= RANKS[i].min) return RANKS[i];
   }
   return RANKS[0];
 }
 
-export default function App() {
-  const [isMiniApp, setIsMiniApp] = useState(false);
-  const [chains, setChains] = useState([]);
+function shortAddr(a) {
+  if (!a) return "";
+  return `${a.slice(0, 6)}…${a.slice(-4)}`;
+}
 
-  const [ethProvider, setEthProvider] = useState(null);
-  const [walletMode, setWalletMode] = useState(null); // 'farcaster' | 'browser'
+export default function App() {
+  const [activeTab, setActiveTab] = useState("game");
+
+  const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const [account, setAccount] = useState(null);
+  const [connectedVia, setConnectedVia] = useState(null); // "farcaster" | "browser"
   const [currentChainId, setCurrentChainId] = useState(null);
 
-  const [farcasterProfile, setFarcasterProfile] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
-  const [status, setStatus] = useState('');
-  const [txHash, setTxHash] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('game');
+  const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
 
-  const strikeLabel = (key) => `${CHAINS[key].strikeAmountDecimal} ${CHAINS[key].strikeSymbol}`;
+  // Provider references (not in state to avoid rerenders)
+  const [fcProvider, setFcProvider] = useState(null);
+  const [browserProvider, setBrowserProvider] = useState(null);
 
-  const providerRequest = async (provider, method, params) => {
-    if (!provider?.request) throw new Error('No EIP-1193 provider available');
-    return provider.request({ method, params });
-  };
+  const totalStrikes = useMemo(() => {
+    if (!profile?.txCount) return 0;
+    return (profile.txCount.base || 0) + (profile.txCount.hyperevm || 0);
+  }, [profile]);
 
-  const refreshChainId = async (provider) => {
-    const cid = await providerRequest(provider, 'eth_chainId');
-    setCurrentChainId(cid);
-    return cid;
-  };
+  const currentRank = useMemo(() => getRank(totalStrikes), [totalStrikes]);
 
-  const attachProviderListeners = (provider) => {
-    if (!provider?.on) return;
-
-    provider.on('accountsChanged', (accounts) => {
-      const addr = accounts?.[0] || null;
-      setAccount(addr);
-      if (addr) loadFarcasterProfile(addr);
-    });
-
-    provider.on('chainChanged', (cid) => {
-      setCurrentChainId(cid);
-    });
-  };
-
-  const loadLeaderboard = async () => {
-    try {
-      const [baseRes, hyperRes] = await Promise.all([
-        fetch(`${BACKEND_URL}/api/leaderboard/base`),
-        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`),
-      ]);
-
-      const [baseData, hyperData] = await Promise.all([baseRes.json(), hyperRes.json()]);
-      setLeaderboard({ base: baseData, hyperevm: hyperData });
-    } catch {}
-  };
-
-  const loadFarcasterProfile = async (walletAddress) => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/profile/${walletAddress}`);
-      if (response.ok) {
-        const data = await response.json();
-        setFarcasterProfile(data);
-      }
-    } catch {}
-  };
-
-  const checkConnection = async (provider) => {
-    try {
-      const accounts = await providerRequest(provider, 'eth_accounts');
-      if (accounts?.length) {
-        setAccount(accounts[0]);
-        await refreshChainId(provider);
-        loadFarcasterProfile(accounts[0]);
-      }
-    } catch {}
-  };
-
-  const supportsHyperEvmInHost = () => {
-    // Outside Farcaster: let user try (their wallet decides)
-    if (!isMiniApp) return true;
-    // Inside Farcaster: only enable if host reports it
-    return chains.includes('eip155:999') || chains.includes('eip155:53460');
-  };
-
+  // -------------- Startup: init SDK + providers + initial fetches --------------
   useEffect(() => {
-    (async () => {
-      // detect miniapp
-      let mini = false;
+    const init = async () => {
+      // 1) Always try to call ready() when in iframe (Farcaster host)
       try {
-        mini = await sdk.isInMiniApp();
-      } catch {
-        mini = false;
-      }
-      setIsMiniApp(mini);
-
-      // call ready (fix splash)
-      try {
-        await sdk.actions.ready();
-      } catch {}
-
-      // detect chains (do NOT display)
-      try {
-        const chs = await sdk.getChains();
-        setChains(Array.isArray(chs) ? chs : []);
-      } catch {
-        setChains([]);
-      }
-
-      // provider selection
-      let provider = null;
-
-      // Prefer Farcaster provider when inside miniapp
-      if (mini) {
-        try {
-          provider = await sdk.wallet.getEthereumProvider();
-          setWalletMode('farcaster');
-        } catch {
-          provider = null;
+        if (isInIframe) {
+          // accessing sdk.context helps ensure the SDK is actually alive
+          await sdk.context;
+          await sdk.actions.ready();
         }
+      } catch {
+        // If ready fails, don't brick the app — continue.
       }
 
-      // Fallback for browsers
-      if (!provider && typeof window !== 'undefined') {
-        provider = window.ethereum || null;
-        if (provider) setWalletMode('browser');
+      // 2) Capture injected browser provider if present
+      if (typeof window !== "undefined" && window.ethereum) {
+        setBrowserProvider(window.ethereum);
       }
 
-      setEthProvider(provider);
-      if (provider) {
-        attachProviderListeners(provider);
-        await checkConnection(provider);
+      // 3) Try to get Farcaster provider if host supports it
+      try {
+        const caps = await sdk.getCapabilities();
+        const supportsFcProvider = caps.includes("wallet.getEthereumProvider");
+        if (supportsFcProvider) {
+          const p = await sdk.wallet.getEthereumProvider();
+          if (p) setFcProvider(p);
+        }
+      } catch {
+        // ignore
       }
 
-      loadLeaderboard();
-    })();
+      // 4) Load leaderboards immediately (works without wallet)
+      await loadLeaderboards();
+    };
+
+    init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const connectFarcasterWallet = async () => {
+  // -------------- Backend calls --------------
+  const loadProfile = async (addr) => {
     try {
-      setLoading(true);
-      setStatus('Connecting Farcaster wallet...');
-
-      const provider = await sdk.wallet.getEthereumProvider();
-      setEthProvider(provider);
-      setWalletMode('farcaster');
-      attachProviderListeners(provider);
-
-      const accounts = await providerRequest(provider, 'eth_requestAccounts');
-      const addr = accounts?.[0] || null;
-      setAccount(addr);
-
-      await refreshChainId(provider);
-      if (addr) loadFarcasterProfile(addr);
-
-      setStatus(addr ? 'Farcaster wallet connected.' : 'Wallet connection failed.');
-    } catch (err) {
-      setStatus(`Connect failed: ${err?.message || String(err)}`);
-    } finally {
-      setLoading(false);
+      const r = await fetch(`${BACKEND_URL}/api/profile/${addr}`);
+      const data = await r.json();
+      setProfile(data);
+    } catch {
+      // fallback (never show raw errors to users)
+      setProfile({
+        username: `knight_${addr.slice(2, 8)}`,
+        displayName: "Castle Warrior",
+        bio: "Defending the realm in the multi-chain wars",
+        pfpUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${addr}`,
+        fid: null,
+        txCount: { base: 0, hyperevm: 0 },
+      });
     }
   };
 
-  const connectBrowserWallet = async () => {
+  const loadLeaderboards = async () => {
+    try {
+      const [b, h] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/leaderboard/base`).then((r) => r.json()),
+        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`).then((r) => r.json()),
+      ]);
+      setLeaderboard({ base: b, hyperevm: h });
+    } catch {
+      // If backend is down, just show empty lists
+      setLeaderboard({ base: [], hyperevm: [] });
+    }
+  };
+
+  // -------------- Helpers for provider / chain / tx --------------
+  const getActiveProvider = () => {
+    // If user explicitly connected via one method, honor it
+    if (connectedVia === "farcaster" && fcProvider) return fcProvider;
+    if (connectedVia === "browser" && browserProvider) return browserProvider;
+
+    // Otherwise prefer Farcaster provider when inside host
+    if (isInIframe && fcProvider) return fcProvider;
+
+    // Fallback to injected wallet
+    return browserProvider || null;
+  };
+
+  const refreshChainId = async () => {
+    const p = getActiveProvider();
+    if (!p?.request) return;
+    try {
+      const cid = await p.request({ method: "eth_chainId" });
+      setCurrentChainId(cid);
+    } catch {
+      // ignore
+    }
+  };
+
+  const requestAccounts = async (provider, viaLabel) => {
+    if (!provider?.request) {
+      setStatus("No wallet provider found.");
+      return null;
+    }
+
     try {
       setLoading(true);
-      setStatus('Connecting browser wallet...');
+      setStatus(viaLabel === "farcaster" ? "Connecting Farcaster wallet…" : "Connecting wallet…");
 
-      const provider = typeof window !== 'undefined' ? window.ethereum : null;
-      if (!provider?.request) throw new Error('No browser wallet found.');
+      const accounts = await provider.request({ method: "eth_requestAccounts" });
+      const addr = accounts?.[0];
+      if (!addr) {
+        setStatus("No account returned.");
+        return null;
+      }
 
-      setEthProvider(provider);
-      setWalletMode('browser');
-      attachProviderListeners(provider);
-
-      const accounts = await providerRequest(provider, 'eth_requestAccounts');
-      const addr = accounts?.[0] || null;
       setAccount(addr);
+      setConnectedVia(viaLabel);
+      setStatus("Connected.");
 
-      await refreshChainId(provider);
-      if (addr) loadFarcasterProfile(addr);
+      // Keep chain + profile synced
+      await refreshChainId();
+      await loadProfile(addr);
 
-      setStatus(addr ? 'Browser wallet connected.' : 'Wallet connection failed.');
-    } catch (err) {
-      setStatus(`Connect failed: ${err?.message || String(err)}`);
+      // Subscribe to changes (if supported)
+      if (provider.on) {
+        provider.on("accountsChanged", (accs) => {
+          const a = accs?.[0] || null;
+          setAccount(a);
+          if (a) loadProfile(a);
+          else setProfile(null);
+        });
+        provider.on("chainChanged", () => refreshChainId());
+      }
+
+      return addr;
+    } catch {
+      setStatus("Connection cancelled.");
+      return null;
     } finally {
       setLoading(false);
     }
@@ -264,212 +230,355 @@ export default function App() {
 
   const switchChain = async (chainKey) => {
     const chain = CHAINS[chainKey];
-    if (!ethProvider) throw new Error('No wallet provider');
+    const p = getActiveProvider();
+    if (!p?.request) throw new Error("No provider");
 
-    setStatus(`Switching to ${chain.name}...`);
-    await providerRequest(ethProvider, 'wallet_switchEthereumChain', [{ chainId: chain.idHex }]);
-
-    // confirm
-    for (let i = 0; i < 10; i++) {
-      const cid = await refreshChainId(ethProvider);
-      if (cid === chain.idHex) return;
-      await sleep(250);
+    try {
+      setStatus(`Traveling to ${chain.name}…`);
+      await p.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: chain.chainIdHex }],
+      });
+    } catch (err) {
+      // 4902 = unknown chain => add it
+      if (err?.code === 4902) {
+        await p.request({
+          method: "wallet_addEthereumChain",
+          params: [
+            {
+              chainId: chain.chainIdHex,
+              chainName: chain.name,
+              rpcUrls: [chain.rpcUrl],
+              blockExplorerUrls: [chain.blockExplorer],
+              nativeCurrency: chain.nativeCurrency,
+            },
+          ],
+        });
+      } else {
+        throw err;
+      }
     }
-    throw new Error('Chain switch did not complete.');
+
+    await refreshChainId();
   };
 
-  const sendTransaction = async (chainKey) => {
-    if (!account) {
-      setStatus('Connect wallet first.');
-      return;
-    }
-    if (!ethProvider) {
-      setStatus('No wallet provider.');
-      return;
-    }
-
-    if (chainKey === 'hyperevm' && isMiniApp && !supportsHyperEvmInHost()) {
-      setStatus('HyperEVM is not supported by this host wallet.');
-      return;
-    }
-
+  const sendStrike = async (chainKey) => {
     const chain = CHAINS[chainKey];
-    const valueHex = toHexWei(STRIKE_WEI[chainKey]);
+    const p = getActiveProvider();
+
+    if (!account) {
+      setStatus("Connect a wallet first.");
+      return;
+    }
+    if (!p?.request) {
+      setStatus("No wallet provider available.");
+      return;
+    }
 
     try {
       setLoading(true);
-      setTxHash('');
+      setStatus(`Preparing strike on ${chain.name}…`);
 
       await switchChain(chainKey);
 
-      const cid = await refreshChainId(ethProvider);
-      if (cid !== chain.idHex) {
-        throw new Error(`Wrong chain. Expected ${chain.name} (${chain.idHex}), got ${cid}`);
-      }
+      // Convert bigint wei to hex for tx value
+      const valueHex = "0x" + chain.valueWei.toString(16);
 
-      const txParams = {
-        from: account,
-        to: chain.contractAddress,
-        value: valueHex,
-        data: '0x',
-      };
+      setStatus("Confirm the transaction in your wallet…");
+      const hash = await p.request({
+        method: "eth_sendTransaction",
+        params: [
+          {
+            from: account,
+            to: chain.contractAddress,
+            value: valueHex,
+            data: "0x",
+          },
+        ],
+      });
 
-      setStatus(`Confirm strike: Send ${strikeLabel(chainKey)}...`);
-      const hash = await providerRequest(ethProvider, 'eth_sendTransaction', [txParams]);
+      setLastTx({ chainKey, hash });
+      setStatus("Strike sent!");
 
-      setTxHash(hash);
-      setStatus(`Transaction sent on ${chain.name}!`);
-
+      // Refresh leaderboards + your profile after a short delay
       setTimeout(() => {
-        loadLeaderboard();
-        if (account) loadFarcasterProfile(account);
+        loadLeaderboards();
+        loadProfile(account);
       }, 2500);
-    } catch (err) {
-      setStatus(`Transaction failed: ${err?.message || String(err)}`);
+    } catch {
+      setStatus("Transaction cancelled or failed.");
     } finally {
       setLoading(false);
     }
   };
 
-  const openExplorer = (chainKey, hash) => {
-    window.open(`${CHAINS[chainKey].blockExplorer}/tx/${hash}`, '_blank');
+  // -------------- UI --------------
+  const explorerTxUrl = (tx) => {
+    if (!tx?.hash) return "#";
+    const chain = CHAINS[tx.chainKey];
+    return `${chain.blockExplorer}/tx/${tx.hash}`;
   };
 
-  const totalStrikes =
-    (farcasterProfile?.txCount?.base || 0) + (farcasterProfile?.txCount?.hyperevm || 0);
-  const rank = getRank(totalStrikes);
-
   return (
-    <div className="min-h-screen bg-black p-4 relative overflow-hidden text-white">
-      {isMiniApp && (
-        <div className="fixed top-4 right-4 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-bold z-50">
-          FARCASTER
-        </div>
-      )}
-
-      <div className="max-w-4xl mx-auto">
-        <div className="text-center mb-8">
-          <h1 className="text-5xl font-bold text-white mb-2 flex items-center justify-center gap-3">
-            <Swords className="text-red-500" size={40} />
-            ChainWarZ
-            <Swords className="text-red-500" size={40} />
-          </h1>
-          <p className="text-gray-400 text-lg">Strike chains. Climb ranks. Dominate.</p>
+    <div className="min-h-screen bg-black text-white">
+      <div className="max-w-md mx-auto p-4">
+        {/* Header */}
+        <div className="mb-4">
+          <div className="flex items-center gap-3">
+            <Shield className="text-gray-300" />
+            <h1 className="text-3xl font-extrabold tracking-tight">ChainWarZ</h1>
+          </div>
+          <p className="text-gray-300 mt-2">Strike chains. Climb ranks. Dominate.</p>
         </div>
 
-        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-          {status && (
-            <div className="mb-4 p-3 bg-gray-800 rounded-lg border border-gray-700 text-center">
-              <p className="text-white font-medium whitespace-pre-wrap">{status}</p>
-            </div>
-          )}
+        {/* Tabs */}
+        <div className="flex gap-2 mb-4">
+          <button
+            onClick={() => setActiveTab("game")}
+            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
+              activeTab === "game" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
+            }`}
+          >
+            <Swords size={18} /> Game
+          </button>
+          <button
+            onClick={() => setActiveTab("profile")}
+            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
+              activeTab === "profile" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
+            }`}
+          >
+            <Shield size={18} /> Profile
+          </button>
+          <button
+            onClick={() => setActiveTab("leaderboard")}
+            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
+              activeTab === "leaderboard" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
+            }`}
+          >
+            <Crown size={18} /> Leaderboard
+          </button>
+        </div>
 
-          <div className="mb-6">
-            {!account ? (
-              <div className="flex flex-col sm:flex-row gap-2">
-                {isMiniApp && (
-                  <button
-                    onClick={connectFarcasterWallet}
-                    disabled={loading}
-                    className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-purple-400"
-                  >
-                    <Wallet size={20} />
-                    {loading ? 'Connecting...' : 'Connect Farcaster Wallet'}
-                  </button>
-                )}
+        {/* Status (user-friendly only) */}
+        {status ? (
+          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
+            {status}
+          </div>
+        ) : null}
+
+        {/* GAME TAB */}
+        {activeTab === "game" && (
+          <div className="space-y-4">
+            {/* Wallet box */}
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs text-gray-400">Wallet</div>
+                  <div className="font-bold">{account ? shortAddr(account) : "Not connected"}</div>
+                  {currentChainId ? (
+                    <div className="text-xs text-gray-400 mt-1">Chain: {currentChainId}</div>
+                  ) : null}
+                </div>
+                <Wallet className="text-gray-300" />
+              </div>
+
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => requestAccounts(fcProvider, "farcaster")}
+                  disabled={!fcProvider || loading}
+                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
+                    fcProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
+                  }`}
+                  title={fcProvider ? "" : "Farcaster provider not available in this host"}
+                >
+                  Connect Farcaster
+                </button>
 
                 <button
-                  onClick={connectBrowserWallet}
-                  disabled={loading}
-                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-blue-400"
+                  onClick={() => requestAccounts(browserProvider, "browser")}
+                  disabled={!browserProvider || loading}
+                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
+                    browserProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
+                  }`}
+                  title={browserProvider ? "" : "No injected wallet found (MetaMask/Rabby)"}
                 >
-                  <Wallet size={20} />
-                  {loading ? 'Connecting...' : 'Connect Browser Wallet'}
+                  Connect Browser
                 </button>
               </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                  <p className="text-gray-400 text-sm">Connected Wallet</p>
-                  <p className="text-white font-mono text-sm">{shortAddr(account)}</p>
-                  <p className="text-gray-400 text-sm mt-2">Chain ID</p>
-                  <p className="text-white font-bold">{currentChainId || 'Unknown'}</p>
-                  <p className="text-gray-500 text-xs mt-2">Connected via: {walletMode || 'unknown'}</p>
-                </div>
 
-                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
-                  <p className="text-gray-400 text-sm">Farcaster Profile</p>
-                  {farcasterProfile ? (
-                    <div>
-                      <p className="text-white font-bold">@{farcasterProfile.username}</p>
-                      <p className={`text-sm font-bold ${rank.color}`}>
-                        <Crown className="inline mr-1" size={14} />
-                        {rank.name}
-                      </p>
-                      <p className="text-gray-400 text-sm">Total Strikes: {totalStrikes}</p>
+              {connectedVia ? (
+                <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div>
+              ) : null}
+            </div>
+
+            {/* Strike buttons */}
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+              <div className="font-bold mb-3">Strike</div>
+
+              <button
+                onClick={() => sendStrike("base")}
+                disabled={!account || loading}
+                className="w-full rounded-xl border border-blue-700 bg-blue-950 px-4 py-3 font-extrabold mb-3 disabled:opacity-50"
+              >
+                Base — {CHAINS.base.strikeLabel}
+              </button>
+
+              <button
+                onClick={() => sendStrike("hyperevm")}
+                disabled={!account || loading}
+                className="w-full rounded-xl border border-green-700 bg-green-950 px-4 py-3 font-extrabold disabled:opacity-50"
+              >
+                HyperEVM — {CHAINS.hyperevm.strikeLabel}
+              </button>
+
+              {lastTx?.hash ? (
+                <a
+                  href={explorerTxUrl(lastTx)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-2 text-sm text-gray-200 underline"
+                >
+                  View last tx <ExternalLink size={16} />
+                </a>
+              ) : null}
+            </div>
+          </div>
+        )}
+
+        {/* PROFILE TAB */}
+        {activeTab === "profile" && (
+          <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+            {!account ? (
+              <div className="text-gray-300">
+                Connect a wallet to see your profile.
+              </div>
+            ) : !profile ? (
+              <div className="text-gray-300">Loading profile…</div>
+            ) : (
+              <div className="flex gap-3">
+                <img
+                  src={profile.pfpUrl}
+                  alt="pfp"
+                  className="w-14 h-14 rounded-full border border-gray-700"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className={`font-extrabold ${currentRank.className}`}>
+                    {currentRank.name}
+                  </div>
+                  <div className="font-bold truncate">
+                    {profile.displayName || profile.username || shortAddr(account)}
+                  </div>
+                  {profile.username ? (
+                    <div className="text-sm text-gray-400 truncate">@{profile.username}</div>
+                  ) : null}
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
+                      <div className="text-xs text-gray-400">Base strikes</div>
+                      <div className="font-extrabold">{profile.txCount?.base || 0}</div>
                     </div>
-                  ) : (
-                    <p className="text-gray-500">Loading profile...</p>
-                  )}
+                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
+                      <div className="text-xs text-gray-400">HyperEVM strikes</div>
+                      <div className="font-extrabold">{profile.txCount?.hyperevm || 0}</div>
+                    </div>
+                  </div>
+
+                  {profile.bio ? (
+                    <div className="mt-3 text-sm text-gray-300">{profile.bio}</div>
+                  ) : null}
                 </div>
               </div>
             )}
           </div>
+        )}
 
-          <div className="grid md:grid-cols-2 gap-6">
-            <div className="bg-gray-800 p-6 rounded-xl border-2 border-gray-700 hover:border-red-500 transition">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-2xl font-bold text-white flex items-center gap-2">
-                  <Shield className="text-blue-400" /> Base
-                </h3>
-                <span className="text-gray-400 text-sm">{strikeLabel('base')}</span>
+        {/* LEADERBOARD TAB */}
+        {activeTab === "leaderboard" && (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-extrabold">Base Leaderboard</div>
+                <button
+                  className="text-sm underline text-gray-300"
+                  onClick={loadLeaderboards}
+                  disabled={loading}
+                >
+                  Refresh
+                </button>
               </div>
 
-              <button
-                onClick={() => sendTransaction('base')}
-                disabled={!account || loading}
-                className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-red-400"
-              >
-                {loading ? 'Striking...' : 'Strike Base'}
-              </button>
+              {leaderboard.base?.length ? (
+                <div className="space-y-2">
+                  {leaderboard.base.slice(0, 10).map((p) => (
+                    <div
+                      key={`b-${p.address}`}
+                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
+                    >
+                      <div className="w-6 text-center font-extrabold text-gray-300">
+                        {p.rank}
+                      </div>
+                      <img
+                        src={p.pfpUrl}
+                        alt=""
+                        className="w-8 h-8 rounded-full border border-gray-700"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold truncate text-gray-200">
+                          {p.username || shortAddr(p.address)}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">
+                          {shortAddr(p.address)}
+                        </div>
+                      </div>
+                      <div className="font-extrabold text-blue-300">{p.txCount}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-gray-400 text-sm">No data yet.</div>
+              )}
             </div>
 
-            <div className="bg-gray-800 p-6 rounded-xl border-2 border-gray-700 hover:border-red-500 transition">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-2xl font-bold text-white flex items-center gap-2">
-                  <Swords className="text-green-400" /> HyperEVM
-                </h3>
-                <span className="text-gray-400 text-sm">{strikeLabel('hyperevm')}</span>
-              </div>
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+              <div className="font-extrabold mb-3">HyperEVM Leaderboard</div>
 
-              <button
-                onClick={() => sendTransaction('hyperevm')}
-                disabled={!account || loading || (isMiniApp && !supportsHyperEvmInHost())}
-                className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-red-400"
-              >
-                {loading
-                  ? 'Striking...'
-                  : isMiniApp && !supportsHyperEvmInHost()
-                  ? 'Not supported in host'
-                  : 'Strike HyperEVM'}
-              </button>
+              {leaderboard.hyperevm?.length ? (
+                <div className="space-y-2">
+                  {leaderboard.hyperevm.slice(0, 10).map((p) => (
+                    <div
+                      key={`h-${p.address}`}
+                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
+                    >
+                      <div className="w-6 text-center font-extrabold text-gray-300">
+                        {p.rank}
+                      </div>
+                      <img
+                        src={p.pfpUrl}
+                        alt=""
+                        className="w-8 h-8 rounded-full border border-gray-700"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold truncate text-gray-200">
+                          {p.username || shortAddr(p.address)}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">
+                          {shortAddr(p.address)}
+                        </div>
+                      </div>
+                      <div className="font-extrabold text-green-300">{p.txCount}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-gray-400 text-sm">No data yet.</div>
+              )}
             </div>
           </div>
+        )}
 
-          {txHash && (
-            <div className="mt-4 p-3 bg-gray-900 rounded-lg border border-gray-600">
-              <p className="text-gray-400 text-sm mb-1">Last Tx</p>
-              <button
-                onClick={() =>
-                  openExplorer(currentChainId === CHAINS.base.idHex ? 'base' : 'hyperevm', txHash)
-                }
-                className="text-blue-400 hover:text-blue-300 text-sm font-mono flex items-center gap-1"
-              >
-                {txHash.slice(0, 10)}...{txHash.slice(-8)}
-                <ExternalLink size={14} />
-              </button>
-            </div>
-          )}
+        {/* tiny footer */}
+        <div className="mt-6 text-center text-xs text-gray-600">
+          {isInIframe ? "Running inside host" : "Running in browser"}
         </div>
       </div>
     </div>
