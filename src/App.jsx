@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, Send, ExternalLink, Trophy, Shield, Swords, Crown } from 'lucide-react';
-import { sdk } from '@farcaster/miniapp-sdk';
+import sdk from '@farcaster/miniapp-sdk';
 
 // Detect if in Farcaster
 const isFarcaster = typeof window !== 'undefined' && (
@@ -64,15 +64,30 @@ export default function App() {
   useEffect(() => {
     const initApp = async () => {
       try {
-        if (isFarcaster) {
-          console.log('Initializing Farcaster Mini App SDK...');
-          await sdk.actions.ready();
-          console.log('Farcaster SDK ready() called successfully');
+        // Always call ready() when in any iframe context or explicitly in Farcaster
+        if (window.parent !== window) {
+          console.log('Detected iframe context - calling Farcaster SDK ready()');
+          
+          // Import and initialize SDK
+          const context = await sdk.context;
+          console.log('SDK context:', context);
+          
+          // Call ready to dismiss splash screen
+          sdk.actions.ready();
+          console.log('✅ Farcaster SDK ready() called successfully');
         }
       } catch (error) {
         console.error('Error initializing Farcaster SDK:', error);
+        // Still try to call ready even if context fails
+        try {
+          sdk.actions.ready();
+          console.log('✅ Called ready() despite context error');
+        } catch (e) {
+          console.error('Failed to call ready():', e);
+        }
       }
       
+      // Initialize app regardless of Farcaster context
       checkConnection();
       loadLeaderboard();
     };
