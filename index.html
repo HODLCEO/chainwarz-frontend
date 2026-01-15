@@ -2,19 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Chain WarZ</title>
     
     <!-- Farcaster Mini App Manifest -->
     <link rel="manifest" href="/manifest.json" />
     
-    <!-- Meta tags for preview -->
+    <!-- Meta tags -->
     <meta property="og:title" content="Chain WarZ" />
     <meta property="og:description" content="Battle for supremacy across Base & Hyperliquid" />
-    <meta property="og:image" content="https://chainwarz-frontend.vercel.app/preview.png" />
     
-    <!-- Farcaster SDK -->
-    <script src="https://sdk.farcaster.xyz/v1.0.0/farcaster.js" async></script>
+    <!-- Correct Farcaster SDK -->
+    <script src="https://unpkg.com/@farcaster/frame-sdk@0.0.1/dist/index.js"></script>
   </head>
   <body>
     <div id="root"></div>

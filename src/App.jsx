@@ -1,20 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, Send, ExternalLink, Trophy, Shield, Swords, Crown } from 'lucide-react';
 
-// Farcaster Frame SDK detection and initialization
-const isFarcaster = typeof window !== 'undefined' && window.ethereum?.isFarcaster;
-
-// Initialize Farcaster SDK if in frame
-if (typeof window !== 'undefined' && window.parent !== window) {
-  // We're in an iframe (Farcaster context)
-  try {
-    if (window.sdk) {
-      window.sdk.actions.ready();
-    }
-  } catch (e) {
-    console.log('Not in Farcaster frame context');
-  }
-}
+// Detect if in Farcaster
+const isFarcaster = typeof window !== 'undefined' && (
+  window.parent !== window || 
+  window.ethereum?.isFarcaster ||
+  window.location !== window.parent.location
+);
 
 const CHAINS = {
   base: {
@@ -63,30 +55,61 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   useEffect(() => {
-    // Initialize Farcaster SDK
-    const initFarcaster = () => {
-      if (window.parent !== window && window.sdk) {
-        try {
-          window.sdk.actions.ready();
-          console.log('Farcaster SDK initialized');
-        } catch (e) {
-          console.error('Error initializing Farcaster SDK:', e);
-        }
+    // Initialize Farcaster SDK properly
+    let sdkInitialized = false;
+    
+    const initFarcasterSDK = () => {
+      if (sdkInitialized) return;
+      
+      // Check if we're in Farcaster context
+      if (window.parent !== window) {
+        console.log('In Farcaster iframe, initializing SDK...');
+        
+        // Wait for SDK to be available
+        const checkSDK = setInterval(() => {
+          if (window.frameSDK || window.sdk) {
+            const sdk = window.frameSDK || window.sdk;
+            
+            try {
+              // Call ready
+              if (sdk.actions && sdk.actions.ready) {
+                sdk.actions.ready({});
+                console.log('Farcaster SDK ready() called');
+              } else if (sdk.ready) {
+                sdk.ready();
+                console.log('Farcaster SDK ready() called (alt)');
+              }
+              
+              sdkInitialized = true;
+              clearInterval(checkSDK);
+            } catch (e) {
+              console.error('Error calling ready():', e);
+            }
+          }
+        }, 100);
+        
+        // Stop checking after 5 seconds
+        setTimeout(() => {
+          clearInterval(checkSDK);
+          if (!sdkInitialized) {
+            console.warn('Farcaster SDK not found after 5s');
+          }
+        }, 5000);
       }
     };
-
-    // Wait for SDK to load
-    if (window.sdk) {
-      initFarcaster();
-    } else {
-      window.addEventListener('load', initFarcaster);
-    }
-
+    
+    // Try immediately
+    initFarcasterSDK();
+    
+    // Also try on load
+    window.addEventListener('load', initFarcasterSDK);
+    
+    // Initialize app
     checkConnection();
     loadLeaderboard();
 
     return () => {
-      window.removeEventListener('load', initFarcaster);
+      window.removeEventListener('load', initFarcasterSDK);
     };
   }, []);
 
