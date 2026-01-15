@@ -1,523 +1,504 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Crown, ExternalLink, Shield, Swords, Wallet } from "lucide-react";
-import { sdk } from "@farcaster/miniapp-sdk";
+import { Wallet, ExternalLink, Shield, Swords, Crown } from "lucide-react";
+import sdk from "@farcaster/miniapp-sdk";
+
+// "Are we inside an iframe / host?"
+const isInHost =
+  typeof window !== "undefined" &&
+  (window.parent !== window || window.location !== window.parent.location);
 
 const BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL ||
-  "https://chainwarz-backend-production.up.railway.app";
+  import.meta.env.VITE_BACKEND_URL || "https://chainwarz-backend-production.up.railway.app";
 
 const CHAINS = {
   base: {
-    key: "base",
-    chainIdHex: "0x2105", // 8453
+    id: "0x2105",
     name: "Base",
     rpcUrl: "https://mainnet.base.org",
     blockExplorer: "https://basescan.org",
     contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
-    strikeLabel: "0.000001337 ETH",
-    valueWei: 1337000000000n,
-    nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+    strikeAmount: "0.000001337 ETH",
+    weiAmount: 1337000000000,
   },
   hyperevm: {
-    key: "hyperevm",
-    chainIdHex: "0x3e7", // 999
+    id: "0xd0d4",
     name: "HyperEVM",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     blockExplorer: "https://hyperevmscan.io",
     contractAddress: "0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02",
-    strikeLabel: "0.0001337 HYPE",
-    valueWei: 133700000000000n,
-    nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
+    strikeAmount: "0.0001337 HYPE",
+    weiAmount: 133700000000000,
   },
 };
 
 const RANKS = [
-  { name: "Squire", min: 0, className: "text-gray-300" },
-  { name: "Knight", min: 1, className: "text-blue-300" },
-  { name: "Knight Captain", min: 5, className: "text-purple-300" },
-  { name: "Baron", min: 10, className: "text-yellow-300" },
-  { name: "Duke", min: 25, className: "text-orange-300" },
-  { name: "Warlord", min: 50, className: "text-red-300" },
-  { name: "Legendary Champion", min: 100, className: "text-pink-300" },
+  { name: "Squire", minStrikes: 0, color: "text-gray-400" },
+  { name: "Knight", minStrikes: 1, color: "text-blue-400" },
+  { name: "Knight Captain", minStrikes: 5, color: "text-purple-400" },
+  { name: "Baron", minStrikes: 10, color: "text-yellow-400" },
+  { name: "Duke", minStrikes: 25, color: "text-orange-400" },
+  { name: "Warlord", minStrikes: 50, color: "text-red-400" },
+  { name: "Legendary Champion", minStrikes: 100, color: "text-pink-400" },
 ];
 
-function getRank(totalStrikes) {
+function getRank(strikeCount) {
   for (let i = RANKS.length - 1; i >= 0; i--) {
-    if (totalStrikes >= RANKS[i].min) return RANKS[i];
+    if (strikeCount >= RANKS[i].minStrikes) return RANKS[i];
   }
   return RANKS[0];
 }
 
 function shortAddr(a) {
   if (!a) return "";
-  return `${a.slice(0, 6)}…${a.slice(-4)}`;
+  return `${a.substring(0, 6)}…${a.substring(a.length - 4)}`;
+}
+
+function getExplorerTxUrl(chainKey, txHash) {
+  if (!txHash) return "#";
+  if (chainKey === "base") return `https://basescan.org/tx/${txHash}`;
+  return `https://hyperevmscan.io/tx/${txHash}`;
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("game");
-
-  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const [isMiniApp, setIsMiniApp] = useState(false);
-  const [contextUser, setContextUser] = useState(null);
+  const [status, setStatus] = useState("");
 
   const [account, setAccount] = useState(null);
-  const [connectedVia, setConnectedVia] = useState(null); // "farcaster" | "browser"
-  const [currentChainId, setCurrentChainId] = useState(null);
+  const [currentChain, setCurrentChain] = useState(null);
+  const [txHash, setTxHash] = useState("");
 
-  const [profileCounts, setProfileCounts] = useState({ base: 0, hyperevm: 0 });
+  // Farcaster context user (fid + basic info)
+  const [fcUser, setFcUser] = useState(null);
+
+  // Profile shown in UI (merged from Neynar + strike counts)
+  const [profile, setProfile] = useState(null);
+
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
-  const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
+  const totalStrikes = useMemo(() => {
+    if (!profile?.txCount) return 0;
+    return (profile.txCount.base || 0) + (profile.txCount.hyperevm || 0);
+  }, [profile]);
 
-  const [fcProvider, setFcProvider] = useState(null);
-  const [browserProvider, setBrowserProvider] = useState(null);
-
-  const totalStrikes = (profileCounts.base || 0) + (profileCounts.hyperevm || 0);
   const currentRank = useMemo(() => getRank(totalStrikes), [totalStrikes]);
 
-  const getActiveProvider = () => {
-    if (connectedVia === "farcaster" && fcProvider) return fcProvider;
-    if (connectedVia === "browser" && browserProvider) return browserProvider;
-    if (isMiniApp && fcProvider) return fcProvider;
-    return browserProvider || null;
-  };
-
-  const refreshChainId = async () => {
-    const p = getActiveProvider();
-    if (!p?.request) return;
-    try {
-      const cid = await p.request({ method: "eth_chainId" });
-      setCurrentChainId(cid);
-    } catch {}
-  };
-
-  const loadLeaderboards = async () => {
-    try {
-      const [b, h] = await Promise.all([
-        fetch(`${BACKEND_URL}/api/leaderboard/base`).then((r) => r.json()),
-        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`).then((r) => r.json()),
-      ]);
-      setLeaderboard({
-        base: Array.isArray(b) ? b : [],
-        hyperevm: Array.isArray(h) ? h : [],
-      });
-    } catch {
-      setLeaderboard({ base: null, hyperevm: null });
-    }
-  };
-
-  const loadCountsForAddress = async (addr) => {
-    try {
-      const r = await fetch(`${BACKEND_URL}/api/profile/${addr}`);
-      const data = await r.json();
-      setProfileCounts({
-        base: data?.txCount?.base || 0,
-        hyperevm: data?.txCount?.hyperevm || 0,
-      });
-    } catch {
-      setProfileCounts({ base: 0, hyperevm: 0 });
-    }
-  };
-
+  // ---------- INIT ----------
   useEffect(() => {
     const init = async () => {
-      // 1) Detect miniapp
       try {
-        const mini = await sdk.isInMiniApp();
-        setIsMiniApp(!!mini);
-
-        if (mini) {
-          // IMPORTANT: context initialization + ready (official pattern)
-          await sdk.context; // ensures context is hydrated :contentReference[oaicite:2]{index=2}
-          await sdk.actions.ready();
-
-          // Now read the real Farcaster user object
-          const user = sdk.context?.user || null;
-          setContextUser(user);
+        if (isInHost) {
+          const context = await sdk.context;
+          setFcUser(context?.user || null);
+          try {
+            await sdk.actions.ready();
+          } catch (e) {
+            // safe to ignore if already called
+          }
         }
-      } catch {}
-
-      // 2) Browser wallet provider
-      if (typeof window !== "undefined" && window.ethereum) {
-        setBrowserProvider(window.ethereum);
+      } catch (e) {
+        // If context fails, we still run as normal web app
       }
 
-      // 3) Farcaster wallet provider (if supported)
-      try {
-        const caps = await sdk.getCapabilities();
-        if (caps.includes("wallet.getEthereumProvider")) {
-          const p = await sdk.wallet.getEthereumProvider();
-          if (p) setFcProvider(p);
-        }
-      } catch {}
-
-      // 4) Load leaderboards on boot
-      loadLeaderboards();
+      await checkConnection();
+      await loadLeaderboard();
     };
 
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (activeTab === "leaderboard") loadLeaderboards();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  // ---------- WALLET HELPERS ----------
+  const updateCurrentChain = async () => {
+    if (!window.ethereum) return;
+    try {
+      const chainId = await window.ethereum.request({ method: "eth_chainId" });
+      setCurrentChain(chainId);
+    } catch (e) {}
+  };
 
-  const requestAccounts = async (provider, viaLabel) => {
-    if (!provider?.request) {
-      setStatus("No wallet provider found.");
-      return null;
+  const checkConnection = async () => {
+    if (!window.ethereum) return;
+    try {
+      const accounts = await window.ethereum.request({ method: "eth_accounts" });
+      if (accounts?.length) {
+        setAccount(accounts[0]);
+        await updateCurrentChain();
+        await loadProfile(accounts[0]);
+      }
+    } catch (e) {}
+  };
+
+  const connectWallet = async () => {
+    if (!window.ethereum) {
+      setStatus("No wallet detected. Open inside Farcaster or install a browser wallet.");
+      return;
     }
 
     try {
       setLoading(true);
-      setStatus(viaLabel === "farcaster" ? "Connecting Farcaster wallet…" : "Connecting wallet…");
+      setStatus("Connecting wallet…");
+      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
 
-      const accounts = await provider.request({ method: "eth_requestAccounts" });
-      const addr = accounts?.[0];
-      if (!addr) {
-        setStatus("No account returned.");
-        return null;
+      if (!accounts?.length) {
+        setStatus("No accounts returned.");
+        return;
       }
 
-      setAccount(addr);
-      setConnectedVia(viaLabel);
+      setAccount(accounts[0]);
       setStatus("Connected.");
+      await updateCurrentChain();
+      await loadProfile(accounts[0]);
 
-      await refreshChainId();
-      await loadCountsForAddress(addr);
+      // keep things updated if user changes wallet/chain
+      window.ethereum.on("accountsChanged", async (accs) => {
+        if (accs?.length) {
+          setAccount(accs[0]);
+          await loadProfile(accs[0]);
+        } else {
+          setAccount(null);
+          setProfile(null);
+        }
+      });
 
-      if (provider.on) {
-        provider.on("accountsChanged", (accs) => {
-          const a = accs?.[0] || null;
-          setAccount(a);
-          if (a) loadCountsForAddress(a);
-        });
-        provider.on("chainChanged", () => refreshChainId());
-      }
-
-      return addr;
-    } catch {
-      setStatus("Connection cancelled.");
-      return null;
+      window.ethereum.on("chainChanged", async () => {
+        await updateCurrentChain();
+      });
+    } catch (e) {
+      setStatus(`Connect failed: ${e?.message || e}`);
     } finally {
       setLoading(false);
     }
   };
 
+  // ---------- PROFILE LOADING (THE IMPORTANT PART) ----------
+  const loadProfile = async (address) => {
+    try {
+      // 1) always load strike counts by address
+      const strikeReq = fetch(`${BACKEND_URL}/api/profile/${address}`).then((r) => r.json());
+
+      // 2) if we have a Farcaster FID, load real Farcaster identity (bio, pfp, etc)
+      const fid = fcUser?.fid;
+      const fcReq = fid
+        ? fetch(`${BACKEND_URL}/api/farcaster/user/${fid}`).then((r) => (r.ok ? r.json() : null))
+        : Promise.resolve(null);
+
+      const [strikeData, fcData] = await Promise.all([strikeReq, fcReq]);
+
+      // Merge rules:
+      // - Use fcData for username/displayName/pfp/bio when present
+      // - Always use strikeData.txCount (truth source for strikes)
+      const merged = {
+        username: fcData?.username || strikeData?.username || "unknown",
+        displayName: fcData?.displayName || strikeData?.displayName || "Knight",
+        pfpUrl: fcData?.pfpUrl || strikeData?.pfpUrl,
+        bio: fcData?.bio || strikeData?.bio || "",
+        fid: fcData?.fid || strikeData?.fid || fid || null,
+        warpcastUrl:
+          fcData?.warpcastUrl ||
+          (fcData?.username ? `https://warpcast.com/${fcData.username}` : null) ||
+          (strikeData?.username ? `https://warpcast.com/${strikeData.username}` : null),
+        txCount: strikeData?.txCount || { base: 0, hyperevm: 0 },
+        address,
+      };
+
+      setProfile(merged);
+    } catch (e) {
+      // last-resort fallback
+      setProfile({
+        username: "unknown",
+        displayName: "Knight",
+        bio: "",
+        pfpUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${address}`,
+        fid: fcUser?.fid || null,
+        warpcastUrl: null,
+        txCount: { base: 0, hyperevm: 0 },
+        address,
+      });
+    }
+  };
+
+  // ---------- LEADERBOARD ----------
+  const loadLeaderboard = async () => {
+    try {
+      const [b, h] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/leaderboard/base`).then((r) => r.json()),
+        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`).then((r) => r.json()),
+      ]);
+      setLeaderboard({ base: b || [], hyperevm: h || [] });
+    } catch (e) {}
+  };
+
+  // ---------- TX SENDING ----------
   const switchChain = async (chainKey) => {
     const chain = CHAINS[chainKey];
-    const p = getActiveProvider();
-    if (!p?.request) throw new Error("No provider");
-
-    try {
-      setStatus(`Switching to ${chain.name}…`);
-      await p.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: chain.chainIdHex }],
-      });
-    } catch (err) {
-      if (err?.code === 4902) {
-        await p.request({
-          method: "wallet_addEthereumChain",
-          params: [
-            {
-              chainId: chain.chainIdHex,
-              chainName: chain.name,
-              rpcUrls: [chain.rpcUrl],
-              blockExplorerUrls: [chain.blockExplorer],
-              nativeCurrency: chain.nativeCurrency,
-            },
-          ],
-        });
-      } else {
-        throw err;
-      }
-    }
-
-    await refreshChainId();
-  };
-
-  const sendStrike = async (chainKey) => {
-    const chain = CHAINS[chainKey];
-    const p = getActiveProvider();
-
-    if (!account) {
-      setStatus("Connect a wallet first.");
-      return;
-    }
-    if (!p?.request) {
-      setStatus("No wallet provider available.");
-      return;
-    }
-
     try {
       setLoading(true);
-      setStatus(`Preparing strike on ${chain.name}…`);
-
-      await switchChain(chainKey);
-
-      const valueHex = "0x" + chain.valueWei.toString(16);
-
-      setStatus("Confirm the transaction in your wallet…");
-      const hash = await p.request({
-        method: "eth_sendTransaction",
-        params: [{ from: account, to: chain.contractAddress, value: valueHex, data: "0x" }],
+      setStatus(`Switching to ${chain.name}…`);
+      await window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: chain.id }],
       });
-
-      setLastTx({ chainKey, hash });
-      setStatus("Strike sent!");
-
-      setTimeout(() => {
-        loadLeaderboards();
-        loadCountsForAddress(account);
-      }, 2500);
-    } catch {
-      setStatus("Transaction cancelled or failed.");
+      await updateCurrentChain();
+      setStatus(`Now on ${chain.name}.`);
+    } catch (e) {
+      setStatus(`Chain switch failed: ${e?.message || e}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const explorerTxUrl = (tx) => {
-    if (!tx?.hash) return "#";
-    const chain = CHAINS[tx.chainKey];
-    return `${chain.blockExplorer}/tx/${tx.hash}`;
+  const sendTransaction = async (chainKey) => {
+    if (!account) {
+      setStatus("Connect your wallet first.");
+      return;
+    }
+
+    const chain = CHAINS[chainKey];
+
+    try {
+      setLoading(true);
+
+      // Ensure correct chain selected
+      const chainId = await window.ethereum.request({ method: "eth_chainId" });
+      if (chainId !== chain.id) {
+        await switchChain(chainKey);
+      }
+
+      setStatus(`Preparing strike on ${chain.name}…`);
+
+      const txParams = {
+        from: account,
+        to: chain.contractAddress,
+        value: `0x${BigInt(chain.weiAmount).toString(16)}`,
+        data: "0x",
+      };
+
+      const hash = await window.ethereum.request({
+        method: "eth_sendTransaction",
+        params: [txParams],
+      });
+
+      setTxHash(hash);
+      setStatus(`Strike sent on ${chain.name}!`);
+      await loadProfile(account);
+      await loadLeaderboard();
+    } catch (e) {
+      setStatus(`Transaction failed: ${e?.message || e}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Real Farcaster profile fields come from sdk.context.user :contentReference[oaicite:3]{index=3}
-  const fcDisplayName =
-    contextUser?.displayName || contextUser?.username || "";
-  const fcUsername = contextUser?.username ? `@${contextUser.username}` : "";
-  const fcPfp = contextUser?.pfpUrl || "";
-  const fcBio = contextUser?.bio || "";
-
-  // If the host doesn't provide profile fields, fall back gracefully
-  const displayName = fcDisplayName || (account ? shortAddr(account) : "Unknown");
-  const username = fcUsername || "";
-  const pfpUrl =
-    fcPfp ||
-    (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
-  const warpcastUrl = contextUser?.username ? `https://warpcast.com/${contextUser.username}` : null;
-
+  // ---------- UI ----------
   return (
     <div className="min-h-screen bg-black text-white">
-      <div className="max-w-md mx-auto p-4">
-        <div className="mb-4">
-          <div className="flex items-center gap-3">
-            <Shield className="text-gray-300" />
-            <h1 className="text-3xl font-extrabold tracking-tight">ChainWarZ</h1>
+      <div className="max-w-3xl mx-auto">
+        <div className="p-5 border-b border-gray-800">
+          <h1 className="text-4xl font-extrabold tracking-tight">ChainWarZ</h1>
+          <p className="text-gray-400 mt-1">Strike chains. Climb ranks. Dominate.</p>
+
+          <div className="flex gap-2 mt-4">
+            <button
+              className={`px-3 py-2 rounded-lg font-bold text-sm ${
+                activeTab === "game" ? "bg-gray-900 border border-gray-700" : "bg-black border border-gray-900"
+              }`}
+              onClick={() => setActiveTab("game")}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Swords size={16} /> Game
+              </span>
+            </button>
+
+            <button
+              className={`px-3 py-2 rounded-lg font-bold text-sm ${
+                activeTab === "profile" ? "bg-gray-900 border border-gray-700" : "bg-black border border-gray-900"
+              }`}
+              onClick={() => setActiveTab("profile")}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Shield size={16} /> Profile
+              </span>
+            </button>
+
+            <button
+              className={`px-3 py-2 rounded-lg font-bold text-sm ${
+                activeTab === "leaderboard" ? "bg-gray-900 border border-gray-700" : "bg-black border border-gray-900"
+              }`}
+              onClick={() => setActiveTab("leaderboard")}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Crown size={16} /> Leaderboard
+              </span>
+            </button>
           </div>
-          <p className="text-gray-300 mt-2">Strike chains. Climb ranks. Dominate.</p>
-        </div>
 
-        <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => setActiveTab("game")}
-            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
-              activeTab === "game" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
-            }`}
-          >
-            <Swords size={18} /> Game
-          </button>
-          <button
-            onClick={() => setActiveTab("profile")}
-            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
-              activeTab === "profile" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
-            }`}
-          >
-            <Shield size={18} /> Profile
-          </button>
-          <button
-            onClick={() => setActiveTab("leaderboard")}
-            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
-              activeTab === "leaderboard" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
-            }`}
-          >
-            <Crown size={18} /> Leaderboard
-          </button>
-        </div>
-
-        {status ? (
-          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
-            {status}
-          </div>
-        ) : null}
-
-        {activeTab === "game" && (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-gray-400">Wallet</div>
-                  <div className="font-bold">{account ? shortAddr(account) : "Not connected"}</div>
-                  {currentChainId ? <div className="text-xs text-gray-400 mt-1">Chain: {currentChainId}</div> : null}
-                </div>
-                <Wallet className="text-gray-300" />
-              </div>
-
-              <div className="mt-3 flex gap-2">
-                <button
-                  onClick={() => requestAccounts(fcProvider, "farcaster")}
-                  disabled={!fcProvider || loading}
-                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
-                    fcProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
-                  }`}
-                >
-                  Connect Farcaster
-                </button>
-
-                <button
-                  onClick={() => requestAccounts(browserProvider, "browser")}
-                  disabled={!browserProvider || loading}
-                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
-                    browserProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
-                  }`}
-                >
-                  Connect Browser
-                </button>
-              </div>
-
-              {connectedVia ? <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div> : null}
+          {account ? (
+            <div className="mt-4 text-sm text-gray-300">
+              Connected: <span className="font-mono">{shortAddr(account)}</span>
             </div>
-
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="font-bold mb-3">Strike</div>
-
+          ) : (
+            <div className="mt-4">
               <button
-                onClick={() => sendStrike("base")}
-                disabled={!account || loading}
-                className="w-full rounded-xl border border-blue-700 bg-blue-950 px-4 py-3 font-extrabold mb-3 disabled:opacity-50"
+                onClick={connectWallet}
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-gray-800 to-gray-900 border border-gray-700 rounded-xl px-4 py-3 font-bold inline-flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                Base — {CHAINS.base.strikeLabel}
+                <Wallet size={18} />
+                {loading ? "Connecting…" : isInHost ? "Connect Farcaster Wallet" : "Connect Browser Wallet"}
               </button>
+            </div>
+          )}
 
-              <button
-                onClick={() => sendStrike("hyperevm")}
-                disabled={!account || loading}
-                className="w-full rounded-xl border border-green-700 bg-green-950 px-4 py-3 font-extrabold disabled:opacity-50"
-              >
-                HyperEVM — {CHAINS.hyperevm.strikeLabel}
-              </button>
+          {status ? <div className="mt-3 text-sm text-gray-400">{status}</div> : null}
+        </div>
 
-              {lastTx?.hash ? (
-                <a
-                  href={explorerTxUrl(lastTx)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-flex items-center gap-2 text-sm text-gray-200 underline"
+        <div className="p-5">
+          {activeTab === "game" && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-3">
+                <button
+                  onClick={() => sendTransaction("base")}
+                  disabled={loading || !account}
+                  className="bg-gradient-to-br from-blue-800 to-blue-950 border border-blue-700 rounded-2xl p-5 text-left disabled:opacity-50"
                 >
-                  View last tx <ExternalLink size={16} />
-                </a>
+                  <div className="text-xl font-extrabold">Base</div>
+                  <div className="text-sm text-blue-200 mt-1">Send {CHAINS.base.strikeAmount}</div>
+                </button>
+
+                <button
+                  onClick={() => sendTransaction("hyperevm")}
+                  disabled={loading || !account}
+                  className="bg-gradient-to-br from-green-800 to-green-950 border border-green-700 rounded-2xl p-5 text-left disabled:opacity-50"
+                >
+                  <div className="text-xl font-extrabold">HyperEVM</div>
+                  <div className="text-sm text-green-200 mt-1">Send {CHAINS.hyperevm.strikeAmount}</div>
+                </button>
+              </div>
+
+              {txHash ? (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <div className="text-sm text-gray-300 font-bold mb-2">Last Tx</div>
+                  <a
+                    href={getExplorerTxUrl(currentChain === CHAINS.base.id ? "base" : "hyperevm", txHash)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 text-sm text-gray-200 underline"
+                  >
+                    {txHash.substring(0, 18)}… <ExternalLink size={14} />
+                  </a>
+                </div>
               ) : null}
             </div>
-          </div>
-        )}
+          )}
 
-        {activeTab === "profile" && (
-          <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-            {!account ? (
-              <div className="text-gray-300">Connect a wallet to see your strike counts.</div>
-            ) : (
-              <div className="flex gap-3">
-                <img src={pfpUrl} alt="pfp" className="w-14 h-14 rounded-full border border-gray-700" />
-                <div className="flex-1 min-w-0">
-                  <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
-                  <div className="font-bold truncate">{displayName}</div>
-                  {username ? <div className="text-sm text-gray-400 truncate">{username}</div> : null}
+          {activeTab === "profile" && (
+            <div>
+              {!account ? (
+                <div className="text-gray-400">Connect a wallet to view your profile.</div>
+              ) : !profile ? (
+                <div className="text-gray-400">Loading profile…</div>
+              ) : (
+                <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+                  <div className="flex items-start gap-4">
+                    <img
+                      src={profile.pfpUrl}
+                      alt="pfp"
+                      className="w-24 h-24 rounded-full border border-gray-700"
+                    />
+                    <div className="flex-1">
+                      <div className={`text-sm font-bold ${currentRank.color}`}>{currentRank.name}</div>
+                      <div className="text-2xl font-extrabold">{profile.displayName}</div>
 
-                  {fcBio ? <div className="mt-2 text-sm text-gray-300">{fcBio}</div> : null}
+                      {profile.username ? (
+                        <div className="mt-1">
+                          <a
+                            href={profile.warpcastUrl || `https://warpcast.com/${profile.username}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-gray-300 underline inline-flex items-center gap-2"
+                          >
+                            @{profile.username} <ExternalLink size={14} />
+                          </a>
+                        </div>
+                      ) : null}
 
-                  {warpcastUrl ? (
-                    <a
-                      href={warpcastUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-flex items-center gap-2 text-sm text-gray-200 underline"
-                    >
-                      View on Warpcast <ExternalLink size={16} />
-                    </a>
-                  ) : null}
-
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
-                      <div className="text-xs text-gray-400">Base strikes</div>
-                      <div className="font-extrabold">{profileCounts.base}</div>
-                    </div>
-                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
-                      <div className="text-xs text-gray-400">HyperEVM strikes</div>
-                      <div className="font-extrabold">{profileCounts.hyperevm}</div>
+                      {profile.bio ? <div className="mt-2 text-gray-400">{profile.bio}</div> : null}
                     </div>
                   </div>
 
-                  <div className="mt-3 text-xs text-gray-600">
-                    {isMiniApp ? "Running inside host" : "Running in browser"}
+                  <div className="grid grid-cols-2 gap-3 mt-5">
+                    <div className="bg-black border border-gray-800 rounded-xl p-3">
+                      <div className="text-xs text-gray-500">Base strikes</div>
+                      <div className="text-2xl font-extrabold text-blue-300">{profile.txCount.base || 0}</div>
+                    </div>
+
+                    <div className="bg-black border border-gray-800 rounded-xl p-3">
+                      <div className="text-xs text-gray-500">HyperEVM strikes</div>
+                      <div className="text-2xl font-extrabold text-green-300">{profile.txCount.hyperevm || 0}</div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-gray-600 mt-4">
+                    {isInHost ? "Running inside host" : "Running in browser"}
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          )}
 
-        {activeTab === "leaderboard" && (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="font-extrabold">Base Leaderboard</div>
-                <button className="text-sm underline text-gray-300" onClick={loadLeaderboards} disabled={loading}>
+          {activeTab === "leaderboard" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="text-xl font-extrabold">Leaderboard</div>
+                <button
+                  onClick={loadLeaderboard}
+                  className="text-sm px-3 py-2 rounded-lg bg-gray-900 border border-gray-800"
+                >
                   Refresh
                 </button>
               </div>
 
-              {leaderboard.base === null ? (
-                <div className="text-gray-400 text-sm">Leaderboard temporarily unavailable.</div>
-              ) : leaderboard.base?.length ? (
-                <div className="space-y-2">
-                  {leaderboard.base.slice(0, 10).map((p) => (
-                    <div key={`b-${p.address}`} className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2">
-                      <div className="w-6 text-center font-extrabold text-gray-300">{p.rank}</div>
-                      <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                <div className="p-3 font-bold border-b border-gray-800 text-blue-300">Base</div>
+                {leaderboard.base?.length ? (
+                  leaderboard.base.map((p) => (
+                    <div key={`${p.address}-base`} className="flex items-center gap-3 p-3 border-b border-gray-800">
+                      <div className="w-10 font-extrabold text-gray-400">#{p.rank}</div>
+                      <img src={p.pfpUrl} alt="" className="w-10 h-10 rounded-full border border-gray-700" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-200">{p.username || shortAddr(p.address)}</div>
-                        <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
+                        <div className="font-bold truncate">{p.username}</div>
+                        <div className="text-sm text-gray-400">{p.txCount} strikes</div>
                       </div>
-                      <div className="font-extrabold text-blue-300">{p.txCount}</div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-gray-400 text-sm">No data yet.</div>
-              )}
-            </div>
+                  ))
+                ) : (
+                  <div className="p-4 text-gray-500">No data yet.</div>
+                )}
+              </div>
 
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="font-extrabold mb-3">HyperEVM Leaderboard</div>
-
-              {leaderboard.hyperevm === null ? (
-                <div className="text-gray-400 text-sm">Leaderboard temporarily unavailable.</div>
-              ) : leaderboard.hyperevm?.length ? (
-                <div className="space-y-2">
-                  {leaderboard.hyperevm.slice(0, 10).map((p) => (
-                    <div key={`h-${p.address}`} className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2">
-                      <div className="w-6 text-center font-extrabold text-gray-300">{p.rank}</div>
-                      <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                <div className="p-3 font-bold border-b border-gray-800 text-green-300">HyperEVM</div>
+                {leaderboard.hyperevm?.length ? (
+                  leaderboard.hyperevm.map((p) => (
+                    <div key={`${p.address}-hyperevm`} className="flex items-center gap-3 p-3 border-b border-gray-800">
+                      <div className="w-10 font-extrabold text-gray-400">#{p.rank}</div>
+                      <img src={p.pfpUrl} alt="" className="w-10 h-10 rounded-full border border-gray-700" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-200">{p.username || shortAddr(p.address)}</div>
-                        <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
+                        <div className="font-bold truncate">{p.username}</div>
+                        <div className="text-sm text-gray-400">{p.txCount} strikes</div>
                       </div>
-                      <div className="font-extrabold text-green-300">{p.txCount}</div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-gray-400 text-sm">No data yet.</div>
-              )}
+                  ))
+                ) : (
+                  <div className="p-4 text-gray-500">No data yet.</div>
+                )}
+              </div>
+
+              <div className="text-xs text-gray-600">{isInHost ? "Running inside host" : "Running in browser"}</div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
