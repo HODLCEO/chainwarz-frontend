@@ -4,11 +4,24 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #000;
 }
 
 #root {
   min-height: 100vh;
+  width: 100%;
+}
+
+/* Farcaster Mini App specific fixes */
+@media (max-width: 768px) {
+  body {
+    font-size: 14px;
+  }
 }

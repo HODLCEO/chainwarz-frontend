@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, Send, ExternalLink, Trophy, Shield, Swords, Crown } from 'lucide-react';
 
-// Farcaster SDK detection
+// Farcaster Frame SDK detection and initialization
 const isFarcaster = typeof window !== 'undefined' && window.ethereum?.isFarcaster;
+
+// Initialize Farcaster SDK if in frame
+if (typeof window !== 'undefined' && window.parent !== window) {
+  // We're in an iframe (Farcaster context)
+  try {
+    if (window.sdk) {
+      window.sdk.actions.ready();
+    }
+  } catch (e) {
+    console.log('Not in Farcaster frame context');
+  }
+}
 
 const CHAINS = {
   base: {
@@ -51,8 +63,31 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   useEffect(() => {
+    // Initialize Farcaster SDK
+    const initFarcaster = () => {
+      if (window.parent !== window && window.sdk) {
+        try {
+          window.sdk.actions.ready();
+          console.log('Farcaster SDK initialized');
+        } catch (e) {
+          console.error('Error initializing Farcaster SDK:', e);
+        }
+      }
+    };
+
+    // Wait for SDK to load
+    if (window.sdk) {
+      initFarcaster();
+    } else {
+      window.addEventListener('load', initFarcaster);
+    }
+
     checkConnection();
     loadLeaderboard();
+
+    return () => {
+      window.removeEventListener('load', initFarcaster);
+    };
   }, []);
 
   const checkConnection = async () => {
