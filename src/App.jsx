@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Crown, ExternalLink, Shield, Swords, Wallet } from "lucide-react";
-import sdk from "@farcaster/miniapp-sdk";
+import { sdk } from "@farcaster/miniapp-sdk";
 
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
@@ -60,7 +60,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [isMiniApp, setIsMiniApp] = useState(false);
-  const [contextUser, setContextUser] = useState(null); // real Farcaster user in-host
+  const [contextUser, setContextUser] = useState(null);
 
   const [account, setAccount] = useState(null);
   const [connectedVia, setConnectedVia] = useState(null); // "farcaster" | "browser"
@@ -99,9 +99,11 @@ export default function App() {
         fetch(`${BACKEND_URL}/api/leaderboard/base`).then((r) => r.json()),
         fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`).then((r) => r.json()),
       ]);
-      setLeaderboard({ base: Array.isArray(b) ? b : [], hyperevm: Array.isArray(h) ? h : [] });
+      setLeaderboard({
+        base: Array.isArray(b) ? b : [],
+        hyperevm: Array.isArray(h) ? h : [],
+      });
     } catch {
-      // Don't show ugly backend errors to users — just present "unavailable"
       setLeaderboard({ base: null, hyperevm: null });
     }
   };
@@ -121,27 +123,28 @@ export default function App() {
 
   useEffect(() => {
     const init = async () => {
-      // Detect miniapp + grab context user (REAL profile)
+      // 1) Detect miniapp
       try {
         const mini = await sdk.isInMiniApp();
         setIsMiniApp(!!mini);
 
         if (mini) {
-          // Call ready to dismiss splash screen
+          // IMPORTANT: context initialization + ready (official pattern)
+          await sdk.context; // ensures context is hydrated :contentReference[oaicite:2]{index=2}
           await sdk.actions.ready();
 
-          // sdk.context has user, location, client, etc.
-          const ctx = sdk.context;
-          if (ctx?.user) setContextUser(ctx.user);
+          // Now read the real Farcaster user object
+          const user = sdk.context?.user || null;
+          setContextUser(user);
         }
       } catch {}
 
-      // Browser provider (MetaMask/Rabby)
+      // 2) Browser wallet provider
       if (typeof window !== "undefined" && window.ethereum) {
         setBrowserProvider(window.ethereum);
       }
 
-      // Farcaster provider (if supported)
+      // 3) Farcaster wallet provider (if supported)
       try {
         const caps = await sdk.getCapabilities();
         if (caps.includes("wallet.getEthereumProvider")) {
@@ -150,7 +153,7 @@ export default function App() {
         }
       } catch {}
 
-      // Load leaderboards on boot (works without wallet)
+      // 4) Load leaderboards on boot
       loadLeaderboards();
     };
 
@@ -158,7 +161,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload leaderboards whenever user visits the leaderboard tab
   useEffect(() => {
     if (activeTab === "leaderboard") loadLeaderboards();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -286,14 +288,20 @@ export default function App() {
     return `${chain.blockExplorer}/tx/${tx.hash}`;
   };
 
-  // Real profile display priority:
-  // 1) Farcaster context user (inside host) — REAL
-  // 2) fallback to wallet address-only (browser)
-  const displayName = contextUser?.displayName || contextUser?.username || (account ? shortAddr(account) : "Unknown");
-  const username = contextUser?.username ? `@${contextUser.username}` : "";
+  // Real Farcaster profile fields come from sdk.context.user :contentReference[oaicite:3]{index=3}
+  const fcDisplayName =
+    contextUser?.displayName || contextUser?.username || "";
+  const fcUsername = contextUser?.username ? `@${contextUser.username}` : "";
+  const fcPfp = contextUser?.pfpUrl || "";
+  const fcBio = contextUser?.bio || "";
+
+  // If the host doesn't provide profile fields, fall back gracefully
+  const displayName = fcDisplayName || (account ? shortAddr(account) : "Unknown");
+  const username = fcUsername || "";
   const pfpUrl =
-    contextUser?.pfpUrl ||
+    fcPfp ||
     (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
+  const warpcastUrl = contextUser?.username ? `https://warpcast.com/${contextUser.username}` : null;
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -420,6 +428,19 @@ export default function App() {
                   <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
                   <div className="font-bold truncate">{displayName}</div>
                   {username ? <div className="text-sm text-gray-400 truncate">{username}</div> : null}
+
+                  {fcBio ? <div className="mt-2 text-sm text-gray-300">{fcBio}</div> : null}
+
+                  {warpcastUrl ? (
+                    <a
+                      href={warpcastUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-flex items-center gap-2 text-sm text-gray-200 underline"
+                    >
+                      View on Warpcast <ExternalLink size={16} />
+                    </a>
+                  ) : null}
 
                   <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                     <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
