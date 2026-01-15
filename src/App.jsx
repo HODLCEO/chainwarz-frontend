@@ -8,31 +8,38 @@ const isFarcaster = typeof window !== 'undefined' && (
   window.location !== window.parent.location
 );
 
+// Backend URL - Updated with Railway production URL
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://chainwarz-backend-production.up.railway.app';
+
 const CHAINS = {
   base: {
     id: '0x2105',
     name: 'Base',
     rpcUrl: 'https://mainnet.base.org',
     blockExplorer: 'https://basescan.org',
-    contractAddress: '0xd4142119673975d18D49203702A73a6b6938A7D1'
+    contractAddress: '0xB2B23e69b9d811D3D43AD473f90A171D18b19aab', // Updated contract address
+    strikeAmount: '0.000001337 ETH',
+    weiAmount: 1337000000000 // 0.000001337 ETH in wei
   },
   hyperevm: {
-    id: '0x3e7',
+    id: '0xd0d4', // Updated to correct HyperEVM chain ID (53460)
     name: 'HyperEVM',
-    rpcUrl: 'https://api.hyperliquid-testnet.xyz/evm',
-    blockExplorer: 'https://hyperevmscan.io',
-    contractAddress: '0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02'
+    rpcUrl: 'https://rpc.hyperliquid.xyz/evm',
+    blockExplorer: 'https://explorer.hyperliquid.xyz',
+    contractAddress: '0xDddED87c1f1487495E8aa47c9B43FEf4c5153054', // Updated contract address
+    strikeAmount: '0.0001337 HYPE',
+    weiAmount: 133700000000000 // 0.0001337 ETH in wei
   }
 };
 
 const RANKS = [
-  { name: 'Squire', minStrikes: 0, icon: '🛡️', color: 'text-gray-400' },
-  { name: 'Knight', minStrikes: 100, icon: '⚔️', color: 'text-blue-400' },
-  { name: 'Knight Captain', minStrikes: 250, icon: '🗡️', color: 'text-purple-400' },
-  { name: 'Baron', minStrikes: 500, icon: '🎖️', color: 'text-yellow-400' },
-  { name: 'Duke', minStrikes: 1000, icon: '👑', color: 'text-orange-400' },
-  { name: 'Warlord', minStrikes: 2500, icon: '⚜️', color: 'text-red-400' },
-  { name: 'Legendary Champion', minStrikes: 5000, icon: '🔥', color: 'text-pink-400' }
+  { name: 'Squire', minStrikes: 0, color: 'text-gray-400' },
+  { name: 'Knight', minStrikes: 100, color: 'text-blue-400' },
+  { name: 'Knight Captain', minStrikes: 250, color: 'text-purple-400' },
+  { name: 'Baron', minStrikes: 500, color: 'text-yellow-400' },
+  { name: 'Duke', minStrikes: 1000, color: 'text-orange-400' },
+  { name: 'Warlord', minStrikes: 2500, color: 'text-red-400' },
+  { name: 'Legendary Champion', minStrikes: 5000, color: 'text-pink-400' }
 ];
 
 function getRank(strikeCount) {
@@ -55,13 +62,10 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   useEffect(() => {
-    // Initialize Farcaster SDK properly
     const initApp = async () => {
       try {
-        // Check if we're in Farcaster context
         if (isFarcaster) {
           console.log('Initializing Farcaster Mini App SDK...');
-          // Call ready() to hide splash screen
           await sdk.actions.ready();
           console.log('Farcaster SDK ready() called successfully');
         }
@@ -69,7 +73,6 @@ export default function App() {
         console.error('Error initializing Farcaster SDK:', error);
       }
       
-      // Initialize app regardless of Farcaster context
       checkConnection();
       loadLeaderboard();
     };
@@ -105,7 +108,7 @@ export default function App() {
 
   const loadFarcasterProfile = async (address) => {
     try {
-      const res = await fetch(`http://localhost:3001/api/profile/${address}`);
+      const res = await fetch(`${BACKEND_URL}/api/profile/${address}`);
       const data = await res.json();
       setFarcasterProfile(data);
     } catch (error) {
@@ -123,8 +126,8 @@ export default function App() {
 
   const loadLeaderboard = async () => {
     try {
-      const baseRes = await fetch('http://localhost:3001/api/leaderboard/base');
-      const hyperevmRes = await fetch('http://localhost:3001/api/leaderboard/hyperevm');
+      const baseRes = await fetch(`${BACKEND_URL}/api/leaderboard/base`);
+      const hyperevmRes = await fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`);
       const baseData = await baseRes.json();
       const hyperevmData = await hyperevmRes.json();
       setLeaderboard({ base: baseData, hyperevm: hyperevmData });
@@ -253,8 +256,7 @@ export default function App() {
       }
       
       setStatus(`Preparing attack on ${chain.name}...`);
-      let weiAmount = chainKey === 'hyperevm' ? 133700000000000 : 1337000000000;
-      const hexValue = '0x' + weiAmount.toString(16);
+      const hexValue = '0x' + chain.weiAmount.toString(16);
       
       const txParams = {
         from: account,
@@ -385,14 +387,14 @@ export default function App() {
                         <div className="absolute inset-0 bg-blue-400 opacity-0 group-hover:opacity-20 transition-opacity"></div>
                         <Shield size={32} className="text-blue-300" />
                         <span className="text-2xl">Fight for Base</span>
-                        <span className="text-xs opacity-75">⚔️ Send 0.000001337 ETH</span>
+                        <span className="text-xs opacity-75">⚔️ Send {CHAINS.base.strikeAmount}</span>
                       </button>
                       
                       <button onClick={() => sendTransaction('hyperevm')} disabled={loading} className="bg-gradient-to-br from-green-700 to-green-900 text-white py-8 px-6 rounded-lg font-bold flex flex-col items-center justify-center gap-3 hover:from-green-600 hover:to-green-800 transition-all disabled:opacity-50 border-4 border-green-600 relative overflow-hidden group">
                         <div className="absolute inset-0 bg-green-400 opacity-0 group-hover:opacity-20 transition-opacity"></div>
                         <Swords size={32} className="text-green-300" />
                         <span className="text-2xl">Fight for Hyperliquid</span>
-                        <span className="text-xs opacity-75">⚔️ Send 0.0001337 HYPE</span>
+                        <span className="text-xs opacity-75">⚔️ Send {CHAINS.hyperevm.strikeAmount}</span>
                       </button>
                     </div>
                   </div>
@@ -417,7 +419,6 @@ export default function App() {
                         <img src={farcasterProfile.pfpUrl} alt="Profile" className="w-24 h-24 rounded-full border-4 border-gray-700" />
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-2">
-                            <span className={`text-3xl ${currentRank.color}`}>{currentRank.icon}</span>
                             <div>
                               <h3 className={`text-lg font-bold ${currentRank.color}`}>{currentRank.name}</h3>
                               <h2 className="text-2xl font-bold text-white">{farcasterProfile.displayName}</h2>
@@ -481,10 +482,7 @@ export default function App() {
                             </div>
                             <img src={player.pfpUrl} alt={player.username} className="w-10 h-10 rounded-full border-2 border-blue-600" />
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1">
-                                <span className="text-xs">{playerRank.icon}</span>
-                                <div className="text-sm font-bold text-blue-200 truncate">{player.username}</div>
-                              </div>
+                              <div className="text-sm font-bold text-blue-200 truncate">{player.username}</div>
                               <div className="text-lg font-bold text-blue-400">{player.txCount}</div>
                             </div>
                           </div>
@@ -509,10 +507,7 @@ export default function App() {
                             </div>
                             <img src={player.pfpUrl} alt={player.username} className="w-10 h-10 rounded-full border-2 border-green-600" />
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1">
-                                <span className="text-xs">{playerRank.icon}</span>
-                                <div className="text-sm font-bold text-green-200 truncate">{player.username}</div>
-                              </div>
+                              <div className="text-sm font-bold text-green-200 truncate">{player.username}</div>
                               <div className="text-lg font-bold text-green-400">{player.txCount}</div>
                             </div>
                           </div>
