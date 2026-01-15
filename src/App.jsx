@@ -2,15 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Crown, ExternalLink, Shield, Swords, Wallet } from "lucide-react";
 import sdk from "@farcaster/miniapp-sdk";
 
-// Backend URL (Vercel env var VITE_BACKEND_URL is preferred)
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   "https://chainwarz-backend-production.up.railway.app";
-
-// Simple host detection (good enough for UI toggles)
-const isInIframe =
-  typeof window !== "undefined" &&
-  (window.parent !== window || window.location !== window.parent.location);
 
 const CHAINS = {
   base: {
@@ -21,20 +15,17 @@ const CHAINS = {
     blockExplorer: "https://basescan.org",
     contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
     strikeLabel: "0.000001337 ETH",
-    // 0.000001337 ETH = 1,337,000,000,000 wei
     valueWei: 1337000000000n,
     nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   },
   hyperevm: {
     key: "hyperevm",
-    chainIdHex: "0xd0d4", // keep your existing chain id as used in-app
+    chainIdHex: "0x3e7", // 999
     name: "HyperEVM",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     blockExplorer: "https://hyperevmscan.io",
-    // UPDATED per your message:
     contractAddress: "0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02",
     strikeLabel: "0.0001337 HYPE",
-    // 0.0001337 with 18 decimals = 133,700,000,000,000 wei
     valueWei: 133700000000000n,
     nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
   },
@@ -68,107 +59,28 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const [isMiniApp, setIsMiniApp] = useState(false);
+  const [contextUser, setContextUser] = useState(null); // real Farcaster user in-host
+
   const [account, setAccount] = useState(null);
   const [connectedVia, setConnectedVia] = useState(null); // "farcaster" | "browser"
   const [currentChainId, setCurrentChainId] = useState(null);
 
-  const [profile, setProfile] = useState(null);
+  const [profileCounts, setProfileCounts] = useState({ base: 0, hyperevm: 0 });
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
 
-  // Provider references (not in state to avoid rerenders)
   const [fcProvider, setFcProvider] = useState(null);
   const [browserProvider, setBrowserProvider] = useState(null);
 
-  const totalStrikes = useMemo(() => {
-    if (!profile?.txCount) return 0;
-    return (profile.txCount.base || 0) + (profile.txCount.hyperevm || 0);
-  }, [profile]);
-
+  const totalStrikes = (profileCounts.base || 0) + (profileCounts.hyperevm || 0);
   const currentRank = useMemo(() => getRank(totalStrikes), [totalStrikes]);
 
-  // -------------- Startup: init SDK + providers + initial fetches --------------
-  useEffect(() => {
-    const init = async () => {
-      // 1) Always try to call ready() when in iframe (Farcaster host)
-      try {
-        if (isInIframe) {
-          // accessing sdk.context helps ensure the SDK is actually alive
-          await sdk.context;
-          await sdk.actions.ready();
-        }
-      } catch {
-        // If ready fails, don't brick the app — continue.
-      }
-
-      // 2) Capture injected browser provider if present
-      if (typeof window !== "undefined" && window.ethereum) {
-        setBrowserProvider(window.ethereum);
-      }
-
-      // 3) Try to get Farcaster provider if host supports it
-      try {
-        const caps = await sdk.getCapabilities();
-        const supportsFcProvider = caps.includes("wallet.getEthereumProvider");
-        if (supportsFcProvider) {
-          const p = await sdk.wallet.getEthereumProvider();
-          if (p) setFcProvider(p);
-        }
-      } catch {
-        // ignore
-      }
-
-      // 4) Load leaderboards immediately (works without wallet)
-      await loadLeaderboards();
-    };
-
-    init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // -------------- Backend calls --------------
-  const loadProfile = async (addr) => {
-    try {
-      const r = await fetch(`${BACKEND_URL}/api/profile/${addr}`);
-      const data = await r.json();
-      setProfile(data);
-    } catch {
-      // fallback (never show raw errors to users)
-      setProfile({
-        username: `knight_${addr.slice(2, 8)}`,
-        displayName: "Castle Warrior",
-        bio: "Defending the realm in the multi-chain wars",
-        pfpUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${addr}`,
-        fid: null,
-        txCount: { base: 0, hyperevm: 0 },
-      });
-    }
-  };
-
-  const loadLeaderboards = async () => {
-    try {
-      const [b, h] = await Promise.all([
-        fetch(`${BACKEND_URL}/api/leaderboard/base`).then((r) => r.json()),
-        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`).then((r) => r.json()),
-      ]);
-      setLeaderboard({ base: b, hyperevm: h });
-    } catch {
-      // If backend is down, just show empty lists
-      setLeaderboard({ base: [], hyperevm: [] });
-    }
-  };
-
-  // -------------- Helpers for provider / chain / tx --------------
   const getActiveProvider = () => {
-    // If user explicitly connected via one method, honor it
     if (connectedVia === "farcaster" && fcProvider) return fcProvider;
     if (connectedVia === "browser" && browserProvider) return browserProvider;
-
-    // Otherwise prefer Farcaster provider when inside host
-    if (isInIframe && fcProvider) return fcProvider;
-
-    // Fallback to injected wallet
+    if (isMiniApp && fcProvider) return fcProvider;
     return browserProvider || null;
   };
 
@@ -178,10 +90,79 @@ export default function App() {
     try {
       const cid = await p.request({ method: "eth_chainId" });
       setCurrentChainId(cid);
+    } catch {}
+  };
+
+  const loadLeaderboards = async () => {
+    try {
+      const [b, h] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/leaderboard/base`).then((r) => r.json()),
+        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`).then((r) => r.json()),
+      ]);
+      setLeaderboard({ base: Array.isArray(b) ? b : [], hyperevm: Array.isArray(h) ? h : [] });
     } catch {
-      // ignore
+      // Don't show ugly backend errors to users — just present "unavailable"
+      setLeaderboard({ base: null, hyperevm: null });
     }
   };
+
+  const loadCountsForAddress = async (addr) => {
+    try {
+      const r = await fetch(`${BACKEND_URL}/api/profile/${addr}`);
+      const data = await r.json();
+      setProfileCounts({
+        base: data?.txCount?.base || 0,
+        hyperevm: data?.txCount?.hyperevm || 0,
+      });
+    } catch {
+      setProfileCounts({ base: 0, hyperevm: 0 });
+    }
+  };
+
+  useEffect(() => {
+    const init = async () => {
+      // Detect miniapp + grab context user (REAL profile)
+      try {
+        const mini = await sdk.isInMiniApp();
+        setIsMiniApp(!!mini);
+
+        if (mini) {
+          // Call ready to dismiss splash screen
+          await sdk.actions.ready();
+
+          // sdk.context has user, location, client, etc.
+          const ctx = sdk.context;
+          if (ctx?.user) setContextUser(ctx.user);
+        }
+      } catch {}
+
+      // Browser provider (MetaMask/Rabby)
+      if (typeof window !== "undefined" && window.ethereum) {
+        setBrowserProvider(window.ethereum);
+      }
+
+      // Farcaster provider (if supported)
+      try {
+        const caps = await sdk.getCapabilities();
+        if (caps.includes("wallet.getEthereumProvider")) {
+          const p = await sdk.wallet.getEthereumProvider();
+          if (p) setFcProvider(p);
+        }
+      } catch {}
+
+      // Load leaderboards on boot (works without wallet)
+      loadLeaderboards();
+    };
+
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reload leaderboards whenever user visits the leaderboard tab
+  useEffect(() => {
+    if (activeTab === "leaderboard") loadLeaderboards();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   const requestAccounts = async (provider, viaLabel) => {
     if (!provider?.request) {
@@ -204,17 +185,14 @@ export default function App() {
       setConnectedVia(viaLabel);
       setStatus("Connected.");
 
-      // Keep chain + profile synced
       await refreshChainId();
-      await loadProfile(addr);
+      await loadCountsForAddress(addr);
 
-      // Subscribe to changes (if supported)
       if (provider.on) {
         provider.on("accountsChanged", (accs) => {
           const a = accs?.[0] || null;
           setAccount(a);
-          if (a) loadProfile(a);
-          else setProfile(null);
+          if (a) loadCountsForAddress(a);
         });
         provider.on("chainChanged", () => refreshChainId());
       }
@@ -234,13 +212,12 @@ export default function App() {
     if (!p?.request) throw new Error("No provider");
 
     try {
-      setStatus(`Traveling to ${chain.name}…`);
+      setStatus(`Switching to ${chain.name}…`);
       await p.request({
         method: "wallet_switchEthereumChain",
         params: [{ chainId: chain.chainIdHex }],
       });
     } catch (err) {
-      // 4902 = unknown chain => add it
       if (err?.code === 4902) {
         await p.request({
           method: "wallet_addEthereumChain",
@@ -281,29 +258,20 @@ export default function App() {
 
       await switchChain(chainKey);
 
-      // Convert bigint wei to hex for tx value
       const valueHex = "0x" + chain.valueWei.toString(16);
 
       setStatus("Confirm the transaction in your wallet…");
       const hash = await p.request({
         method: "eth_sendTransaction",
-        params: [
-          {
-            from: account,
-            to: chain.contractAddress,
-            value: valueHex,
-            data: "0x",
-          },
-        ],
+        params: [{ from: account, to: chain.contractAddress, value: valueHex, data: "0x" }],
       });
 
       setLastTx({ chainKey, hash });
       setStatus("Strike sent!");
 
-      // Refresh leaderboards + your profile after a short delay
       setTimeout(() => {
         loadLeaderboards();
-        loadProfile(account);
+        loadCountsForAddress(account);
       }, 2500);
     } catch {
       setStatus("Transaction cancelled or failed.");
@@ -312,17 +280,24 @@ export default function App() {
     }
   };
 
-  // -------------- UI --------------
   const explorerTxUrl = (tx) => {
     if (!tx?.hash) return "#";
     const chain = CHAINS[tx.chainKey];
     return `${chain.blockExplorer}/tx/${tx.hash}`;
   };
 
+  // Real profile display priority:
+  // 1) Farcaster context user (inside host) — REAL
+  // 2) fallback to wallet address-only (browser)
+  const displayName = contextUser?.displayName || contextUser?.username || (account ? shortAddr(account) : "Unknown");
+  const username = contextUser?.username ? `@${contextUser.username}` : "";
+  const pfpUrl =
+    contextUser?.pfpUrl ||
+    (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
+
   return (
     <div className="min-h-screen bg-black text-white">
       <div className="max-w-md mx-auto p-4">
-        {/* Header */}
         <div className="mb-4">
           <div className="flex items-center gap-3">
             <Shield className="text-gray-300" />
@@ -331,7 +306,6 @@ export default function App() {
           <p className="text-gray-300 mt-2">Strike chains. Climb ranks. Dominate.</p>
         </div>
 
-        {/* Tabs */}
         <div className="flex gap-2 mb-4">
           <button
             onClick={() => setActiveTab("game")}
@@ -359,25 +333,20 @@ export default function App() {
           </button>
         </div>
 
-        {/* Status (user-friendly only) */}
         {status ? (
           <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
             {status}
           </div>
         ) : null}
 
-        {/* GAME TAB */}
         {activeTab === "game" && (
           <div className="space-y-4">
-            {/* Wallet box */}
             <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs text-gray-400">Wallet</div>
                   <div className="font-bold">{account ? shortAddr(account) : "Not connected"}</div>
-                  {currentChainId ? (
-                    <div className="text-xs text-gray-400 mt-1">Chain: {currentChainId}</div>
-                  ) : null}
+                  {currentChainId ? <div className="text-xs text-gray-400 mt-1">Chain: {currentChainId}</div> : null}
                 </div>
                 <Wallet className="text-gray-300" />
               </div>
@@ -389,7 +358,6 @@ export default function App() {
                   className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
                     fcProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
                   }`}
-                  title={fcProvider ? "" : "Farcaster provider not available in this host"}
                 >
                   Connect Farcaster
                 </button>
@@ -400,18 +368,14 @@ export default function App() {
                   className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
                     browserProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
                   }`}
-                  title={browserProvider ? "" : "No injected wallet found (MetaMask/Rabby)"}
                 >
                   Connect Browser
                 </button>
               </div>
 
-              {connectedVia ? (
-                <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div>
-              ) : null}
+              {connectedVia ? <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div> : null}
             </div>
 
-            {/* Strike buttons */}
             <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="font-bold mb-3">Strike</div>
 
@@ -445,90 +409,59 @@ export default function App() {
           </div>
         )}
 
-        {/* PROFILE TAB */}
         {activeTab === "profile" && (
           <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
             {!account ? (
-              <div className="text-gray-300">
-                Connect a wallet to see your profile.
-              </div>
-            ) : !profile ? (
-              <div className="text-gray-300">Loading profile…</div>
+              <div className="text-gray-300">Connect a wallet to see your strike counts.</div>
             ) : (
               <div className="flex gap-3">
-                <img
-                  src={profile.pfpUrl}
-                  alt="pfp"
-                  className="w-14 h-14 rounded-full border border-gray-700"
-                />
+                <img src={pfpUrl} alt="pfp" className="w-14 h-14 rounded-full border border-gray-700" />
                 <div className="flex-1 min-w-0">
-                  <div className={`font-extrabold ${currentRank.className}`}>
-                    {currentRank.name}
-                  </div>
-                  <div className="font-bold truncate">
-                    {profile.displayName || profile.username || shortAddr(account)}
-                  </div>
-                  {profile.username ? (
-                    <div className="text-sm text-gray-400 truncate">@{profile.username}</div>
-                  ) : null}
+                  <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
+                  <div className="font-bold truncate">{displayName}</div>
+                  {username ? <div className="text-sm text-gray-400 truncate">{username}</div> : null}
 
                   <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                     <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
                       <div className="text-xs text-gray-400">Base strikes</div>
-                      <div className="font-extrabold">{profile.txCount?.base || 0}</div>
+                      <div className="font-extrabold">{profileCounts.base}</div>
                     </div>
                     <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
                       <div className="text-xs text-gray-400">HyperEVM strikes</div>
-                      <div className="font-extrabold">{profile.txCount?.hyperevm || 0}</div>
+                      <div className="font-extrabold">{profileCounts.hyperevm}</div>
                     </div>
                   </div>
 
-                  {profile.bio ? (
-                    <div className="mt-3 text-sm text-gray-300">{profile.bio}</div>
-                  ) : null}
+                  <div className="mt-3 text-xs text-gray-600">
+                    {isMiniApp ? "Running inside host" : "Running in browser"}
+                  </div>
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* LEADERBOARD TAB */}
         {activeTab === "leaderboard" && (
           <div className="space-y-4">
             <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="font-extrabold">Base Leaderboard</div>
-                <button
-                  className="text-sm underline text-gray-300"
-                  onClick={loadLeaderboards}
-                  disabled={loading}
-                >
+                <button className="text-sm underline text-gray-300" onClick={loadLeaderboards} disabled={loading}>
                   Refresh
                 </button>
               </div>
 
-              {leaderboard.base?.length ? (
+              {leaderboard.base === null ? (
+                <div className="text-gray-400 text-sm">Leaderboard temporarily unavailable.</div>
+              ) : leaderboard.base?.length ? (
                 <div className="space-y-2">
                   {leaderboard.base.slice(0, 10).map((p) => (
-                    <div
-                      key={`b-${p.address}`}
-                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
-                    >
-                      <div className="w-6 text-center font-extrabold text-gray-300">
-                        {p.rank}
-                      </div>
-                      <img
-                        src={p.pfpUrl}
-                        alt=""
-                        className="w-8 h-8 rounded-full border border-gray-700"
-                      />
+                    <div key={`b-${p.address}`} className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2">
+                      <div className="w-6 text-center font-extrabold text-gray-300">{p.rank}</div>
+                      <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-200">
-                          {p.username || shortAddr(p.address)}
-                        </div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {shortAddr(p.address)}
-                        </div>
+                        <div className="font-bold truncate text-gray-200">{p.username || shortAddr(p.address)}</div>
+                        <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
                       </div>
                       <div className="font-extrabold text-blue-300">{p.txCount}</div>
                     </div>
@@ -542,28 +475,17 @@ export default function App() {
             <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="font-extrabold mb-3">HyperEVM Leaderboard</div>
 
-              {leaderboard.hyperevm?.length ? (
+              {leaderboard.hyperevm === null ? (
+                <div className="text-gray-400 text-sm">Leaderboard temporarily unavailable.</div>
+              ) : leaderboard.hyperevm?.length ? (
                 <div className="space-y-2">
                   {leaderboard.hyperevm.slice(0, 10).map((p) => (
-                    <div
-                      key={`h-${p.address}`}
-                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
-                    >
-                      <div className="w-6 text-center font-extrabold text-gray-300">
-                        {p.rank}
-                      </div>
-                      <img
-                        src={p.pfpUrl}
-                        alt=""
-                        className="w-8 h-8 rounded-full border border-gray-700"
-                      />
+                    <div key={`h-${p.address}`} className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2">
+                      <div className="w-6 text-center font-extrabold text-gray-300">{p.rank}</div>
+                      <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-200">
-                          {p.username || shortAddr(p.address)}
-                        </div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {shortAddr(p.address)}
-                        </div>
+                        <div className="font-bold truncate text-gray-200">{p.username || shortAddr(p.address)}</div>
+                        <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
                       </div>
                       <div className="font-extrabold text-green-300">{p.txCount}</div>
                     </div>
@@ -575,11 +497,6 @@ export default function App() {
             </div>
           </div>
         )}
-
-        {/* tiny footer */}
-        <div className="mt-6 text-center text-xs text-gray-600">
-          {isInIframe ? "Running inside host" : "Running in browser"}
-        </div>
       </div>
     </div>
   );
