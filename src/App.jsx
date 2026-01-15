@@ -1,15 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, Send, ExternalLink, Trophy, Shield, Swords, Crown } from 'lucide-react';
-import sdk from '@farcaster/miniapp-sdk';
+import { sdk } from '@farcaster/miniapp-sdk';
 
-// Detect if in Farcaster
-const isFarcaster = typeof window !== 'undefined' && (
-  window.parent !== window || 
-  window.location !== window.parent.location
-);
-
-// Backend URL - Updated with Railway production URL
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://chainwarz-backend-production.up.railway.app';
+// Backend URL
+const BACKEND_URL =
+  import.meta.env.VITE_BACKEND_URL || 'https://chainwarz-backend-production.up.railway.app';
 
 const CHAINS = {
   base: {
@@ -27,8 +22,8 @@ const CHAINS = {
     rpcUrl: 'https://rpc.hyperliquid.xyz/evm',
     blockExplorer: 'https://explorer.hyperliquid.xyz',
     contractAddress: '0xDddED87c1f1487495E8aa47c9B43FEf4c5153054',
-    strikeAmount: '0.0001337 HYPE',
-    weiAmount: 133700000000000
+    strikeAmount: '0.000001337 HYPE',
+    weiAmount: 1337000000000
   }
 };
 
@@ -53,6 +48,9 @@ function getRank(strikeCount) {
 
 export default function App() {
   const [account, setAccount] = useState(null);
+  const [isMiniApp, setIsMiniApp] = useState(false);
+  const [ethProvider, setEthProvider] = useState(null);
+
   const [farcasterProfile, setFarcasterProfile] = useState(null);
   const [status, setStatus] = useState('');
   const [txHash, setTxHash] = useState('');
@@ -61,139 +59,163 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('game');
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
+  // ----------------------------
+  // Wallet provider selection
+  // ----------------------------
+  const getProvider = async (mini) => {
+    if (mini) {
+      // Farcaster/Warpcast wallet provider (EIP-1193)
+      return await sdk.wallet.getEthereumProvider();
+    }
+    // Regular browser wallet provider (MetaMask, Coinbase Wallet, etc.)
+    return typeof window !== 'undefined' ? window.ethereum : null;
+  };
+
+  const providerRequest = async (provider, method, params) => {
+    if (!provider?.request) throw new Error('No EIP-1193 provider available');
+    return provider.request({ method, params });
+  };
+
+  const attachProviderListeners = (provider) => {
+    if (!provider?.on) return;
+
+    provider.on('accountsChanged', (accounts) => {
+      if (accounts?.length) {
+        setAccount(accounts[0]);
+        loadFarcasterProfile(accounts[0]);
+      } else {
+        setAccount(null);
+        setFarcasterProfile(null);
+      }
+    });
+
+    provider.on('chainChanged', () => {
+      updateCurrentChain(provider);
+    });
+  };
+
+  // ----------------------------
+  // Init: detect Mini App + ready() + provider
+  // ----------------------------
   useEffect(() => {
     const initApp = async () => {
+      // 1) Detect Mini App context (official + reliable)
+      let mini = false;
       try {
-        if (window.parent !== window) {
-          console.log('Initializing Farcaster SDK...');
-          const context = await sdk.context;
-          console.log('SDK context loaded:', context);
-          sdk.actions.ready();
-          console.log('SDK ready() called successfully');
-        }
-      } catch (error) {
-        console.error('SDK init error:', error);
+        mini = await sdk.isInMiniApp();
+      } catch (e) {
+        mini = false;
+      }
+      setIsMiniApp(mini);
+
+      // 2) Dismiss Farcaster splash screen
+      if (mini) {
         try {
-          sdk.actions.ready();
+          await sdk.actions.ready();
+          console.log('SDK ready() called successfully');
         } catch (e) {
-          console.error('Failed to call ready():', e);
+          console.error('ready() failed:', e);
         }
       }
-      
-      checkConnection();
+
+      // 3) Choose the right wallet provider
+      const provider = await getProvider(mini);
+      setEthProvider(provider);
+
+      // 4) Auto-check connection + attach listeners
+      if (provider) {
+        await checkConnection(provider);
+        attachProviderListeners(provider);
+      } else {
+        console.warn('No wallet provider detected');
+      }
+
+      // 5) Load your existing data
       loadLeaderboard();
     };
-    
+
     initApp();
   }, []);
 
-  const checkConnection = async () => {
-    if (typeof window.ethereum !== 'undefined') {
-      try {
-        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-        if (accounts.length > 0) {
-          setAccount(accounts[0]);
-          updateCurrentChain();
-          loadFarcasterProfile(accounts[0]);
-        }
-      } catch (err) {
-        console.error('Error checking connection:', err);
-      }
-    }
-  };
-
-  const updateCurrentChain = async () => {
-    if (typeof window.ethereum !== 'undefined') {
-      try {
-        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-        setCurrentChain(chainId);
-      } catch (err) {
-        console.error('Error getting chain:', err);
-      }
-    }
-  };
-
-  const loadFarcasterProfile = async (address) => {
+  // ----------------------------
+  // Backend calls
+  // ----------------------------
+  const loadFarcasterProfile = async (walletAddress) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/profile/${address}`);
-      const data = await res.json();
-      setFarcasterProfile(data);
+      const response = await fetch(`${BACKEND_URL}/api/profile/${walletAddress}`);
+      if (response.ok) {
+        const data = await response.json();
+        setFarcasterProfile(data);
+      }
     } catch (error) {
-      console.error('Error loading profile:', error);
-      setFarcasterProfile({
-        username: 'knight_' + address.substring(2, 8),
-        displayName: 'Castle Warrior',
-        bio: 'Defending the realm in the multi-chain wars',
-        pfpUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + address,
-        fid: '12345',
-        txCount: { base: 0, hyperevm: 0 }
-      });
+      console.error('Error loading Farcaster profile:', error);
     }
   };
 
   const loadLeaderboard = async () => {
     try {
-      const baseRes = await fetch(`${BACKEND_URL}/api/leaderboard/base`);
-      const hyperevmRes = await fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`);
-      const baseData = await baseRes.json();
-      const hyperevmData = await hyperevmRes.json();
-      setLeaderboard({ base: baseData, hyperevm: hyperevmData });
+      const response = await fetch(`${BACKEND_URL}/api/leaderboard`);
+      if (response.ok) {
+        const data = await response.json();
+        setLeaderboard(data);
+      }
     } catch (error) {
       console.error('Error loading leaderboard:', error);
     }
   };
 
-  const connectWallet = async () => {
-    if (isFarcaster) {
-      try {
-        setLoading(true);
-        setStatus('Connecting with Farcaster wallet...');
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        setAccount(accounts[0]);
-        setStatus('Connected with Farcaster!');
-        updateCurrentChain();
-        loadFarcasterProfile(accounts[0]);
-        window.ethereum.on('accountsChanged', (accounts) => {
-          if (accounts.length > 0) {
-            setAccount(accounts[0]);
-            loadFarcasterProfile(accounts[0]);
-          } else {
-            setAccount(null);
-            setFarcasterProfile(null);
-          }
-        });
-        window.ethereum.on('chainChanged', () => updateCurrentChain());
-      } catch (err) {
-        setStatus(`Error: ${err.message}`);
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    
-    if (typeof window.ethereum === 'undefined') {
-      setStatus('Please install a Web3 wallet or open in Farcaster app');
-      return;
-    }
+  // ----------------------------
+  // Wallet / chain helpers
+  // ----------------------------
+  const checkConnection = async (providerParam) => {
+    const provider = providerParam || ethProvider;
+    if (!provider) return;
 
     try {
+      const accounts = await providerRequest(provider, 'eth_accounts');
+      if (accounts.length > 0) {
+        setAccount(accounts[0]);
+        await updateCurrentChain(provider);
+        loadFarcasterProfile(accounts[0]);
+      }
+    } catch (err) {
+      console.error('Error checking connection:', err);
+    }
+  };
+
+  const updateCurrentChain = async (providerParam) => {
+    const provider = providerParam || ethProvider;
+    if (!provider) return;
+
+    try {
+      const chainId = await providerRequest(provider, 'eth_chainId');
+      setCurrentChain(chainId);
+    } catch (err) {
+      console.error('Error getting chain:', err);
+    }
+  };
+
+  const connectWallet = async () => {
+    try {
+      // If user clicks too quickly, provider might not be set yet. Grab it on-demand.
+      let provider = ethProvider;
+      if (!provider) {
+        provider = await getProvider(isMiniApp);
+        setEthProvider(provider);
+      }
+
+      if (!provider) {
+        setStatus(isMiniApp ? 'No Farcaster wallet provider found' : 'Please install a Web3 wallet');
+        return;
+      }
+
       setLoading(true);
-      setStatus('Summoning your wallet...');
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      setStatus(isMiniApp ? 'Connecting Farcaster wallet...' : 'Connecting wallet...');
+      const accounts = await providerRequest(provider, 'eth_requestAccounts');
       setAccount(accounts[0]);
-      setStatus('Connected successfully!');
-      updateCurrentChain();
+      await updateCurrentChain(provider);
       loadFarcasterProfile(accounts[0]);
-      window.ethereum.on('accountsChanged', (accounts) => {
-        if (accounts.length > 0) {
-          setAccount(accounts[0]);
-          loadFarcasterProfile(accounts[0]);
-        } else {
-          setAccount(null);
-          setFarcasterProfile(null);
-        }
-      });
-      window.ethereum.on('chainChanged', () => updateCurrentChain());
+      setStatus(isMiniApp ? 'Connected with Farcaster wallet!' : 'Wallet connected!');
     } catch (err) {
       setStatus(`Error: ${err.message}`);
     } finally {
@@ -203,36 +225,35 @@ export default function App() {
 
   const switchChain = async (chainKey) => {
     const chain = CHAINS[chainKey];
+    if (!ethProvider) throw new Error('No wallet provider');
+
+    const nativeCurrency =
+      chainKey === 'hyperevm'
+        ? { name: 'HYPE', symbol: 'HYPE', decimals: 18 }
+        : { name: 'Ether', symbol: 'ETH', decimals: 18 };
+
     try {
       setLoading(true);
-      setStatus(`Traveling to ${chain.name}...`);
-      await window.ethereum.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: chain.id }],
-      });
-      await new Promise(resolve => setTimeout(resolve, 500));
-      await updateCurrentChain();
-      setStatus(`Arrived at ${chain.name}!`);
+      setStatus(`Switching to ${chain.name}...`);
+
+      await providerRequest(ethProvider, 'wallet_switchEthereumChain', [{ chainId: chain.id }]);
+      await updateCurrentChain(ethProvider);
+
+      setStatus(`Now on ${chain.name}!`);
     } catch (err) {
-      if (err.code === 4902) {
-        try {
-          await window.ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [{
-              chainId: chain.id,
-              chainName: chain.name,
-              rpcUrls: [chain.rpcUrl],
-              blockExplorerUrls: [chain.blockExplorer],
-              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }
-            }],
-          });
-          await new Promise(resolve => setTimeout(resolve, 500));
-          await updateCurrentChain();
-          setStatus(`Discovered and traveled to ${chain.name}!`);
-        } catch (addErr) {
-          setStatus(`Error adding chain: ${addErr.message}`);
-          throw addErr;
-        }
+      // 4902 = chain not added yet
+      if (err?.code === 4902) {
+        await providerRequest(ethProvider, 'wallet_addEthereumChain', [
+          {
+            chainId: chain.id,
+            chainName: chain.name,
+            rpcUrls: [chain.rpcUrl],
+            blockExplorerUrls: [chain.blockExplorer],
+            nativeCurrency
+          }
+        ]);
+        await updateCurrentChain(ethProvider);
+        setStatus(`Added + switched to ${chain.name}!`);
       } else {
         setStatus(`Error switching chain: ${err.message}`);
         throw err;
@@ -247,285 +268,236 @@ export default function App() {
       setStatus('Please connect your wallet first');
       return;
     }
+    if (!ethProvider) {
+      setStatus('No wallet provider available');
+      return;
+    }
 
     const chain = CHAINS[chainKey];
+
     try {
       setLoading(true);
       setTxHash('');
-      setStatus(`Traveling to ${chain.name}...`);
+
+      setStatus(`Switching to ${chain.name}...`);
       await switchChain(chainKey);
-      
-      const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+
+      const currentChainId = await providerRequest(ethProvider, 'eth_chainId');
       if (currentChainId !== chain.id) {
-        setStatus(`Failed to travel to ${chain.name}`);
-        setLoading(false);
+        setStatus(`Failed to switch to ${chain.name}`);
         return;
       }
-      
-      setStatus(`Preparing attack on ${chain.name}...`);
+
+      setStatus('Confirm in wallet...');
       const hexValue = '0x' + chain.weiAmount.toString(16);
-      
-      const txParams = {
-        from: account,
-        to: chain.contractAddress,
-        value: hexValue
-      };
-      
-      setStatus(`Confirm the attack in your wallet...`);
-      const hash = await window.ethereum.request({
-        method: 'eth_sendTransaction',
-        params: [txParams],
-      });
-      
+
+      const hash = await providerRequest(ethProvider, 'eth_sendTransaction', [
+        {
+          from: account,
+          to: chain.contractAddress,
+          value: hexValue
+        }
+      ]);
+
       setTxHash(hash);
-      setStatus(`Victory on ${chain.name}!`);
+      setStatus(`Transaction sent on ${chain.name}!`);
+
+      // Refresh data after a short delay
       setTimeout(() => {
         loadLeaderboard();
         if (account) loadFarcasterProfile(account);
       }, 3000);
     } catch (err) {
-      setStatus(`Battle failed: ${err.message}`);
+      setStatus(`Transaction failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const getChainName = (chainId) => {
-    if (!chainId) return 'Unknown Realm';
-    const chain = Object.values(CHAINS).find(c => c.id === chainId);
-    return chain ? chain.name : `Realm ${parseInt(chainId, 16)}`;
+  // ----------------------------
+  // UI helpers
+  // ----------------------------
+  const openExplorer = (chainKey, hash) => {
+    const url = `${CHAINS[chainKey].blockExplorer}/tx/${hash}`;
+    window.open(url, '_blank');
   };
 
-  const getExplorerUrl = (chainKey, hash) => {
-    return `${CHAINS[chainKey].blockExplorer}/tx/${hash}`;
-  };
-
-  const totalStrikes = farcasterProfile ? farcasterProfile.txCount.base + farcasterProfile.txCount.hyperevm : 0;
-  const currentRank = getRank(totalStrikes);
+  const totalStrikes =
+    (farcasterProfile?.strikes?.base || 0) + (farcasterProfile?.strikes?.hyperevm || 0);
+  const rank = getRank(totalStrikes);
 
   return (
     <div className="min-h-screen bg-black p-4 relative overflow-hidden">
-      {isFarcaster && (
+      {isMiniApp && (
         <div className="fixed top-4 right-4 bg-purple-600 text-white px-3 py-1 rounded-full text-xs font-bold z-50 flex items-center gap-2">
-          <span>🟣</span> Farcaster
+          <span>FARCASTER</span>
         </div>
       )}
-      
-      <div className="absolute inset-0 opacity-5">
-        <div className="absolute top-10 left-10 text-6xl">🏰</div>
-        <div className="absolute top-20 right-20 text-5xl">⚔️</div>
-        <div className="absolute bottom-20 left-20 text-5xl">🛡️</div>
-        <div className="absolute bottom-10 right-10 text-6xl">👑</div>
-      </div>
-      
-      <div className="max-w-6xl mx-auto relative z-10">
-        <div className="bg-gradient-to-b from-gray-900 to-black rounded-2xl shadow-2xl overflow-hidden border-4 border-gray-800">
-          <div className="bg-gradient-to-r from-gray-800 via-gray-900 to-gray-800 p-6 text-white relative border-b-4 border-gray-700">
-            <div className="flex items-center justify-center gap-3 mb-2">
-              <Shield size={40} className="text-gray-400" />
-              <h1 className="text-4xl font-bold text-center">Chain WarZ</h1>
-              <Swords size={40} className="text-gray-400" />
+
+      <div className="max-w-4xl mx-auto">
+        <div className="text-center mb-8">
+          <h1 className="text-5xl font-bold text-white mb-2 flex items-center justify-center gap-3">
+            <Swords className="text-red-500" size={40} />
+            ChainWarZ
+            <Swords className="text-red-500" size={40} />
+          </h1>
+          <p className="text-gray-400 text-lg">Strike the chains. Climb the ranks. Dominate the leaderboard.</p>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex justify-center mb-6">
+          <div className="bg-gray-900 rounded-lg p-1 flex">
+            <button
+              onClick={() => setActiveTab('game')}
+              className={`px-6 py-2 rounded-md font-bold transition ${
+                activeTab === 'game' ? 'bg-red-600 text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <Swords className="inline mr-2" size={18} />
+              Battle
+            </button>
+            <button
+              onClick={() => setActiveTab('leaderboard')}
+              className={`px-6 py-2 rounded-md font-bold transition ${
+                activeTab === 'leaderboard' ? 'bg-yellow-600 text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <Trophy className="inline mr-2" size={18} />
+              Leaderboard
+            </button>
+          </div>
+        </div>
+
+        {/* Main Content */}
+        <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
+          {/* Status Bar */}
+          {status && (
+            <div className="mb-4 p-3 bg-gray-800 rounded-lg border border-gray-700 text-center">
+              <p className="text-white font-medium">{status}</p>
             </div>
-            <p className="text-gray-400 text-center">Battle for supremacy across the kingdoms</p>
-          </div>
+          )}
 
-          <div className="bg-black border-b-4 border-gray-800 flex">
-            <button onClick={() => setActiveTab('game')} className={`flex-1 py-3 px-6 font-bold transition-all flex items-center justify-center gap-2 ${activeTab === 'game' ? 'bg-gray-900 text-white border-b-4 border-gray-600' : 'text-gray-600 hover:text-gray-400'}`}>
-              <Swords size={20} /> Battle Arena
-            </button>
-            <button onClick={() => setActiveTab('profile')} className={`flex-1 py-3 px-6 font-bold transition-all flex items-center justify-center gap-2 ${activeTab === 'profile' ? 'bg-gray-900 text-white border-b-4 border-gray-600' : 'text-gray-600 hover:text-gray-400'}`}>
-              <Shield size={20} /> Knight Profile
-            </button>
-            <button onClick={() => setActiveTab('leaderboard')} className={`flex-1 py-3 px-6 font-bold transition-all flex items-center justify-center gap-2 ${activeTab === 'leaderboard' ? 'bg-gray-900 text-white border-b-4 border-gray-600' : 'text-gray-600 hover:text-gray-400'}`}>
-              <Crown size={20} /> Hall of Fame
-            </button>
-          </div>
+          {/* Wallet Section */}
+          <div className="mb-6">
+            {!account ? (
+              <button
+                onClick={connectWallet}
+                disabled={loading}
+                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-blue-400"
+              >
+                <Wallet size={20} />
+                {loading ? 'Connecting...' : isMiniApp ? 'Connect Farcaster Wallet' : 'Connect Wallet'}
+              </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                  <p className="text-gray-400 text-sm">Connected Wallet</p>
+                  <p className="text-white font-mono text-sm">
+                    {account.slice(0, 6)}...{account.slice(-4)}
+                  </p>
+                  <p className="text-gray-400 text-sm mt-2">Chain</p>
+                  <p className="text-white font-bold">
+                    {currentChain === CHAINS.base.id
+                      ? 'Base'
+                      : currentChain === CHAINS.hyperevm.id
+                      ? 'HyperEVM'
+                      : currentChain || 'Unknown'}
+                  </p>
+                </div>
 
-          <div className="p-6 bg-black">
-            {activeTab === 'game' && (
-              <div className="space-y-6">
-                <div className="bg-gray-900 rounded-xl p-4 border-2 border-gray-800">
-                  {!account ? (
-                    <button onClick={connectWallet} disabled={loading} className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white py-3 px-6 rounded-lg font-bold flex items-center justify-center gap-2 hover:from-gray-600 hover:to-gray-700 transition-all disabled:opacity-50 border-2 border-gray-600">
-                      <Wallet size={20} />
-                      {loading ? 'Connecting...' : isFarcaster ? 'Connect Farcaster Wallet' : 'Connect Wallet'}
-                    </button>
+                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                  <p className="text-gray-400 text-sm">Farcaster Profile</p>
+                  {farcasterProfile ? (
+                    <div>
+                      <p className="text-white font-bold">@{farcasterProfile.username}</p>
+                      <p className={`text-sm font-bold ${rank.color}`}>
+                        <Crown className="inline mr-1" size={14} />
+                        {rank.name}
+                      </p>
+                      <p className="text-gray-400 text-sm">Total Strikes: {totalStrikes}</p>
+                    </div>
                   ) : (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <span className="text-xs text-gray-400 block mb-1 font-semibold">Knight</span>
-                        <span className="text-sm font-mono bg-black px-3 py-1 rounded text-gray-300 block border border-gray-800">
-                          {account.substring(0, 6)}...{account.substring(38)}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-xs text-gray-400 block mb-1 font-semibold">Current Realm</span>
-                        <span className="text-sm font-bold text-gray-300 bg-black px-3 py-1 rounded block text-center border border-gray-800">
-                          {getChainName(currentChain)}
-                        </span>
-                      </div>
+                    <p className="text-gray-500">Loading profile...</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {activeTab === 'game' ? (
+            <div className="grid md:grid-cols-2 gap-6">
+              {Object.entries(CHAINS).map(([chainKey, chain]) => (
+                <div
+                  key={chainKey}
+                  className="bg-gray-800 p-6 rounded-xl border-2 border-gray-700 hover:border-red-500 transition"
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-2xl font-bold text-white flex items-center gap-2">
+                      <Shield className={chainKey === 'base' ? 'text-blue-400' : 'text-purple-400'} />
+                      {chain.name}
+                    </h3>
+                    <span className="text-gray-400 text-sm">{chain.strikeAmount}</span>
+                  </div>
+
+                  <button
+                    onClick={() => sendTransaction(chainKey)}
+                    disabled={!account || loading}
+                    className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-red-400"
+                  >
+                    <Send size={20} />
+                    {loading ? 'Striking...' : `Strike ${chain.name}`}
+                  </button>
+
+                  {txHash && (
+                    <div className="mt-4 p-3 bg-gray-900 rounded-lg border border-gray-600">
+                      <p className="text-gray-400 text-sm mb-1">Last Strike</p>
+                      <button
+                        onClick={() => openExplorer(chainKey, txHash)}
+                        className="text-blue-400 hover:text-blue-300 text-sm font-mono flex items-center gap-1"
+                      >
+                        {txHash.slice(0, 10)}...{txHash.slice(-8)}
+                        <ExternalLink size={14} />
+                      </button>
                     </div>
                   )}
                 </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {Object.entries(leaderboard).map(([chainKey, players]) => (
+                <div key={chainKey} className="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                  <h3 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+                    <Trophy className={chainKey === 'base' ? 'text-blue-400' : 'text-purple-400'} />
+                    {chainKey === 'base' ? 'Base' : 'HyperEVM'} Leaderboard
+                  </h3>
 
-                {status && (
-                  <div className="bg-gray-900 border-2 border-gray-700 rounded-lg p-4">
-                    <p className="text-sm text-gray-300">{status}</p>
-                  </div>
-                )}
-
-                {txHash && (
-                  <div className="bg-green-900 border-2 border-green-700 rounded-lg p-4">
-                    <p className="text-sm text-green-200 font-bold mb-2">Victory Achieved!</p>
-                    <a href={getExplorerUrl(currentChain === CHAINS.base.id ? 'base' : 'hyperevm', txHash)} target="_blank" rel="noopener noreferrer" className="text-xs bg-black px-2 py-1 rounded border border-green-700 text-green-300 hover:text-white inline-flex items-center gap-1">
-                      {txHash.substring(0, 20)}... <ExternalLink size={12} />
-                    </a>
-                  </div>
-                )}
-
-                {account && (
-                  <div className="space-y-4">
-                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                      <Swords size={24} /> Choose Your Battlefield
-                    </h2>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <button onClick={() => sendTransaction('base')} disabled={loading} className="bg-gradient-to-br from-blue-700 to-blue-900 text-white py-8 px-6 rounded-lg font-bold flex flex-col items-center justify-center gap-3 hover:from-blue-600 hover:to-blue-800 transition-all disabled:opacity-50 border-4 border-blue-600 relative overflow-hidden group">
-                        <div className="absolute inset-0 bg-blue-400 opacity-0 group-hover:opacity-20 transition-opacity"></div>
-                        <Shield size={32} className="text-blue-300" />
-                        <span className="text-2xl">Fight for Base</span>
-                        <span className="text-xs opacity-75">Send {CHAINS.base.strikeAmount}</span>
-                      </button>
-                      
-                      <button onClick={() => sendTransaction('hyperevm')} disabled={loading} className="bg-gradient-to-br from-green-700 to-green-900 text-white py-8 px-6 rounded-lg font-bold flex flex-col items-center justify-center gap-3 hover:from-green-600 hover:to-green-800 transition-all disabled:opacity-50 border-4 border-green-600 relative overflow-hidden group">
-                        <div className="absolute inset-0 bg-green-400 opacity-0 group-hover:opacity-20 transition-opacity"></div>
-                        <Swords size={32} className="text-green-300" />
-                        <span className="text-2xl">Fight for Hyperliquid</span>
-                        <span className="text-xs opacity-75">Send {CHAINS.hyperevm.strikeAmount}</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === 'profile' && (
-              <div className="space-y-6">
-                {!account ? (
-                  <div className="text-center py-12">
-                    <Shield size={64} className="mx-auto text-gray-600 mb-4" />
-                    <p className="text-gray-400 mb-4 text-lg">Connect your wallet to view your knight profile</p>
-                    <button onClick={connectWallet} className="bg-gradient-to-r from-gray-700 to-gray-800 text-white py-3 px-8 rounded-lg font-bold hover:from-gray-600 hover:to-gray-700 transition-all border-2 border-gray-600">
-                      Connect Wallet
-                    </button>
-                  </div>
-                ) : farcasterProfile ? (
-                  <div className="max-w-2xl mx-auto">
-                    <div className="bg-gray-900 rounded-xl p-6 border-4 border-gray-800">
-                      <div className="flex items-start gap-4 mb-6">
-                        <img src={farcasterProfile.pfpUrl} alt="Profile" className="w-24 h-24 rounded-full border-4 border-gray-700" />
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-2">
-                            <div>
-                              <h3 className={`text-lg font-bold ${currentRank.color}`}>{currentRank.name}</h3>
-                              <h2 className="text-2xl font-bold text-white">{farcasterProfile.displayName}</h2>
-                            </div>
-                          </div>
-                          <a href={`https://warpcast.com/${farcasterProfile.username}`} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-gray-300 flex items-center gap-1 mb-2">
-                            @{farcasterProfile.username} <ExternalLink size={14} />
-                          </a>
-                          <p className="text-gray-500 text-sm">{farcasterProfile.bio}</p>
-                        </div>
-                      </div>
-                      
-                      <div className="mb-6 p-4 bg-black rounded-lg border-2 border-gray-800">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-gray-400 text-sm">Total Strikes</span>
-                          <span className="text-2xl font-bold text-white">{totalStrikes}</span>
-                        </div>
-                        {RANKS.findIndex(r => r.name === currentRank.name) < RANKS.length - 1 && (
+                  <div className="space-y-3">
+                    {players.map((player, index) => (
+                      <div
+                        key={player.walletAddress}
+                        className="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-600"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="text-2xl font-bold text-yellow-400">#{index + 1}</div>
                           <div>
-                            <div className="flex justify-between text-xs text-gray-500 mb-1">
-                              <span>Next: {RANKS[RANKS.findIndex(r => r.name === currentRank.name) + 1].name}</span>
-                              <span>{RANKS[RANKS.findIndex(r => r.name === currentRank.name) + 1].minStrikes - totalStrikes} to go</span>
-                            </div>
-                            <div className="w-full bg-gray-800 rounded-full h-2">
-                              <div className="bg-gradient-to-r from-blue-500 to-green-500 h-2 rounded-full transition-all" style={{ width: `${Math.min(100, ((totalStrikes - currentRank.minStrikes) / (RANKS[RANKS.findIndex(r => r.name === currentRank.name) + 1].minStrikes - currentRank.minStrikes)) * 100)}%` }}></div>
-                            </div>
+                            <p className="text-white font-bold">@{player.username || 'Unknown'}</p>
+                            <p className="text-gray-400 text-sm font-mono">
+                              {player.walletAddress.slice(0, 6)}...{player.walletAddress.slice(-4)}
+                            </p>
                           </div>
-                        )}
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4 pt-6 border-t-2 border-gray-800">
-                        <div className="bg-gradient-to-br from-blue-900 to-blue-950 rounded-lg p-4 border-2 border-blue-800">
-                          <div className="text-3xl font-bold text-blue-400 mb-1">{farcasterProfile.txCount.base}</div>
-                          <div className="text-sm text-blue-300">Base Kingdom Battles</div>
                         </div>
-                        <div className="bg-gradient-to-br from-green-900 to-green-950 rounded-lg p-4 border-2 border-green-800">
-                          <div className="text-3xl font-bold text-green-400 mb-1">{farcasterProfile.txCount.hyperevm}</div>
-                          <div className="text-sm text-green-300">Hyperliquid Battles</div>
+                        <div className="text-right">
+                          <p className="text-gray-400 text-sm">Strikes</p>
+                          <div className="text-lg font-bold text-green-400">{player.txCount}</div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            )}
-
-            {activeTab === 'leaderboard' && (
-              <div className="space-y-6">
-                <div>
-                  <h2 className="text-xl font-bold text-blue-400 mb-4 flex items-center gap-2">
-                    <Crown size={24} className="text-gray-500" /> Base Kingdom Warriors
-                  </h2>
-                  <div className="bg-gray-900 rounded-xl border-2 border-blue-800 overflow-hidden">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-                      {leaderboard.base.map((player, idx) => {
-                        const playerRank = getRank(player.txCount);
-                        return (
-                          <div key={idx} className={`flex items-center gap-3 p-3 border-b border-r border-gray-800 ${idx < 3 ? 'bg-gradient-to-br from-blue-900 to-blue-950' : 'bg-gray-900'}`}>
-                            <div className="w-8 text-center font-bold text-gray-400 text-lg">
-                              {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : player.rank}
-                            </div>
-                            <img src={player.pfpUrl} alt={player.username} className="w-10 h-10 rounded-full border-2 border-blue-600" />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-bold text-blue-200 truncate">{player.username}</div>
-                              <div className="text-lg font-bold text-blue-400">{player.txCount}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    ))}
                   </div>
                 </div>
-
-                <div>
-                  <h2 className="text-xl font-bold text-green-400 mb-4 flex items-center gap-2">
-                    <Crown size={24} className="text-gray-500" /> Hyperliquid Legends
-                  </h2>
-                  <div className="bg-gray-900 rounded-xl border-2 border-green-800 overflow-hidden">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-                      {leaderboard.hyperevm.map((player, idx) => {
-                        const playerRank = getRank(player.txCount);
-                        return (
-                          <div key={idx} className={`flex items-center gap-3 p-3 border-b border-r border-gray-800 ${idx < 3 ? 'bg-gradient-to-br from-green-900 to-green-950' : 'bg-gray-900'}`}>
-                            <div className="w-8 text-center font-bold text-gray-400 text-lg">
-                              {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : player.rank}
-                            </div>
-                            <img src={player.pfpUrl} alt={player.username} className="w-10 h-10 rounded-full border-2 border-green-600" />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-bold text-green-200 truncate">{player.username}</div>
-                              <div className="text-lg font-bold text-green-400">{player.txCount}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
