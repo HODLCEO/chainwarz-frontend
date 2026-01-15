@@ -17,18 +17,18 @@ const CHAINS = {
     name: 'Base',
     rpcUrl: 'https://mainnet.base.org',
     blockExplorer: 'https://basescan.org',
-    contractAddress: '0xB2B23e69b9d811D3D43AD473f90A171D18b19aab', // Updated contract address
+    contractAddress: '0xB2B23e69b9d811D3D43AD473f90A171D18b19aab',
     strikeAmount: '0.000001337 ETH',
-    weiAmount: 1337000000000 // 0.000001337 ETH in wei
+    weiAmount: 1337000000000
   },
   hyperevm: {
-    id: '0xd0d4', // Updated to correct HyperEVM chain ID (53460)
+    id: '0xd0d4',
     name: 'HyperEVM',
     rpcUrl: 'https://rpc.hyperliquid.xyz/evm',
     blockExplorer: 'https://explorer.hyperliquid.xyz',
-    contractAddress: '0xDddED87c1f1487495E8aa47c9B43FEf4c5153054', // Updated contract address
+    contractAddress: '0xDddED87c1f1487495E8aa47c9B43FEf4c5153054',
     strikeAmount: '0.0001337 HYPE',
-    weiAmount: 133700000000000 // 0.0001337 ETH in wei
+    weiAmount: 133700000000000
   }
 };
 
@@ -64,30 +64,22 @@ export default function App() {
   useEffect(() => {
     const initApp = async () => {
       try {
-        // Always call ready() when in any iframe context or explicitly in Farcaster
         if (window.parent !== window) {
-          console.log('Detected iframe context - calling Farcaster SDK ready()');
-          
-          // Import and initialize SDK
+          console.log('Initializing Farcaster SDK...');
           const context = await sdk.context;
-          console.log('SDK context:', context);
-          
-          // Call ready to dismiss splash screen
+          console.log('SDK context loaded:', context);
           sdk.actions.ready();
-          console.log('✅ Farcaster SDK ready() called successfully');
+          console.log('SDK ready() called successfully');
         }
       } catch (error) {
-        console.error('Error initializing Farcaster SDK:', error);
-        // Still try to call ready even if context fails
+        console.error('SDK init error:', error);
         try {
           sdk.actions.ready();
-          console.log('✅ Called ready() despite context error');
         } catch (e) {
           console.error('Failed to call ready():', e);
         }
       }
       
-      // Initialize app regardless of Farcaster context
       checkConnection();
       loadLeaderboard();
     };
@@ -158,7 +150,7 @@ export default function App() {
         setStatus('Connecting with Farcaster wallet...');
         const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
         setAccount(accounts[0]);
-        setStatus('Connected with Farcaster! ⚔️');
+        setStatus('Connected with Farcaster!');
         updateCurrentChain();
         loadFarcasterProfile(accounts[0]);
         window.ethereum.on('accountsChanged', (accounts) => {
@@ -286,7 +278,7 @@ export default function App() {
       });
       
       setTxHash(hash);
-      setStatus(`⚔️ Strike successful on ${chain.name}! Victory is yours!`);
+      setStatus(`Victory on ${chain.name}!`);
       setTimeout(() => {
         loadLeaderboard();
         if (account) loadFarcasterProfile(account);
@@ -334,7 +326,7 @@ export default function App() {
               <h1 className="text-4xl font-bold text-center">Chain WarZ</h1>
               <Swords size={40} className="text-gray-400" />
             </div>
-            <p className="text-gray-400 text-center">⚔️ Battle for supremacy across the kingdoms ⚔️</p>
+            <p className="text-gray-400 text-center">Battle for supremacy across the kingdoms</p>
           </div>
 
           <div className="bg-black border-b-4 border-gray-800 flex">
@@ -361,13 +353,13 @@ export default function App() {
                   ) : (
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <span className="text-xs text-gray-400 block mb-1 font-semibold">⚔️ Knight</span>
+                        <span className="text-xs text-gray-400 block mb-1 font-semibold">Knight</span>
                         <span className="text-sm font-mono bg-black px-3 py-1 rounded text-gray-300 block border border-gray-800">
                           {account.substring(0, 6)}...{account.substring(38)}
                         </span>
                       </div>
                       <div>
-                        <span className="text-xs text-gray-400 block mb-1 font-semibold">🏰 Current Realm</span>
+                        <span className="text-xs text-gray-400 block mb-1 font-semibold">Current Realm</span>
                         <span className="text-sm font-bold text-gray-300 bg-black px-3 py-1 rounded block text-center border border-gray-800">
                           {getChainName(currentChain)}
                         </span>
@@ -384,7 +376,7 @@ export default function App() {
 
                 {txHash && (
                   <div className="bg-green-900 border-2 border-green-700 rounded-lg p-4">
-                    <p className="text-sm text-green-200 font-bold mb-2">⚔️ Victory Achieved!</p>
+                    <p className="text-sm text-green-200 font-bold mb-2">Victory Achieved!</p>
                     <a href={getExplorerUrl(currentChain === CHAINS.base.id ? 'base' : 'hyperevm', txHash)} target="_blank" rel="noopener noreferrer" className="text-xs bg-black px-2 py-1 rounded border border-green-700 text-green-300 hover:text-white inline-flex items-center gap-1">
                       {txHash.substring(0, 20)}... <ExternalLink size={12} />
                     </a>
@@ -402,14 +394,14 @@ export default function App() {
                         <div className="absolute inset-0 bg-blue-400 opacity-0 group-hover:opacity-20 transition-opacity"></div>
                         <Shield size={32} className="text-blue-300" />
                         <span className="text-2xl">Fight for Base</span>
-                        <span className="text-xs opacity-75">⚔️ Send {CHAINS.base.strikeAmount}</span>
+                        <span className="text-xs opacity-75">Send {CHAINS.base.strikeAmount}</span>
                       </button>
                       
                       <button onClick={() => sendTransaction('hyperevm')} disabled={loading} className="bg-gradient-to-br from-green-700 to-green-900 text-white py-8 px-6 rounded-lg font-bold flex flex-col items-center justify-center gap-3 hover:from-green-600 hover:to-green-800 transition-all disabled:opacity-50 border-4 border-green-600 relative overflow-hidden group">
                         <div className="absolute inset-0 bg-green-400 opacity-0 group-hover:opacity-20 transition-opacity"></div>
                         <Swords size={32} className="text-green-300" />
                         <span className="text-2xl">Fight for Hyperliquid</span>
-                        <span className="text-xs opacity-75">⚔️ Send {CHAINS.hyperevm.strikeAmount}</span>
+                        <span className="text-xs opacity-75">Send {CHAINS.hyperevm.strikeAmount}</span>
                       </button>
                     </div>
                   </div>
@@ -467,11 +459,11 @@ export default function App() {
                       <div className="grid grid-cols-2 gap-4 pt-6 border-t-2 border-gray-800">
                         <div className="bg-gradient-to-br from-blue-900 to-blue-950 rounded-lg p-4 border-2 border-blue-800">
                           <div className="text-3xl font-bold text-blue-400 mb-1">{farcasterProfile.txCount.base}</div>
-                          <div className="text-sm text-blue-300">🛡️ Base Kingdom Battles</div>
+                          <div className="text-sm text-blue-300">Base Kingdom Battles</div>
                         </div>
                         <div className="bg-gradient-to-br from-green-900 to-green-950 rounded-lg p-4 border-2 border-green-800">
                           <div className="text-3xl font-bold text-green-400 mb-1">{farcasterProfile.txCount.hyperevm}</div>
-                          <div className="text-sm text-green-300">⚔️ Hyperliquid Battles</div>
+                          <div className="text-sm text-green-300">Hyperliquid Battles</div>
                         </div>
                       </div>
                     </div>
