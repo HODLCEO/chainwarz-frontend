@@ -5,16 +5,29 @@ import { sdk } from '@farcaster/miniapp-sdk';
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL || 'https://chainwarz-backend-production.up.railway.app';
 
-// ✅ EXACT strike amount required by BOTH contracts
-// STRIKE_AMOUNT = 1337420690000 wei = 0.00000133742069 (18 decimals)
-const STRIKE_WEI = 1337420690000n;
-const STRIKE_DECIMAL = '0.00000133742069';
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function toHexWei(bi) {
   return '0x' + bi.toString(16);
 }
+
+function shortAddr(a) {
+  if (!a) return '';
+  return `${a.slice(0, 6)}...${a.slice(-4)}`;
+}
+
+// ✅ Per-chain strike amounts (BigInt exact)
+const STRIKE_WEI = {
+  // Base stays on the contract-verified exact amount you just confirmed works:
+  base: 1337420690000n,        // 0.00000133742069 ETH
+  // HyperEVM requested change:
+  hyperevm: 133700000000000n,  // 0.0001337 HYPE
+};
+
+const STRIKE_DECIMAL = {
+  base: '0.00000133742069',
+  hyperevm: '0.0001337',
+};
 
 const CHAINS = {
   base: {
@@ -24,8 +37,8 @@ const CHAINS = {
     rpcUrl: 'https://mainnet.base.org',
     blockExplorer: 'https://basescan.org',
     contractAddress: '0xB2B23e69b9d811D3D43AD473f90A171D18b19aab',
-    strikeAmountDecimal: STRIKE_DECIMAL,
-    strikeSymbol: 'ETH'
+    strikeAmountDecimal: STRIKE_DECIMAL.base,
+    strikeSymbol: 'ETH',
   },
   hyperevm: {
     caip2: 'eip155:999',
@@ -33,11 +46,12 @@ const CHAINS = {
     name: 'HyperEVM',
     rpcUrl: 'https://rpc.hyperliquid.xyz/evm',
     blockExplorer: 'https://hyperevmscan.io',
-    contractAddress: '0xDddED87c1f1487495E8aa47c9B43FEf4c5153054',
-    // ✅ SAME exact strike amount as Base (contract is identical)
-    strikeAmountDecimal: STRIKE_DECIMAL,
-    strikeSymbol: 'HYPE'
-  }
+    // ✅ requested new contract address
+    contractAddress: '0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02',
+    // ✅ requested strike price
+    strikeAmountDecimal: STRIKE_DECIMAL.hyperevm,
+    strikeSymbol: 'HYPE',
+  },
 };
 
 const RANKS = [
@@ -47,7 +61,7 @@ const RANKS = [
   { name: 'Baron', minStrikes: 500, color: 'text-yellow-400' },
   { name: 'Duke', minStrikes: 1000, color: 'text-orange-400' },
   { name: 'Warlord', minStrikes: 2500, color: 'text-red-400' },
-  { name: 'Legendary Champion', minStrikes: 5000, color: 'text-pink-400' }
+  { name: 'Legendary Champion', minStrikes: 5000, color: 'text-pink-400' },
 ];
 
 function getRank(strikeCount) {
@@ -57,14 +71,8 @@ function getRank(strikeCount) {
   return RANKS[0];
 }
 
-function shortAddr(a) {
-  if (!a) return '';
-  return `${a.slice(0, 6)}...${a.slice(-4)}`;
-}
-
 export default function App() {
   const [isMiniApp, setIsMiniApp] = useState(false);
-  const [capabilities, setCapabilities] = useState([]);
   const [chains, setChains] = useState([]);
 
   const [ethProvider, setEthProvider] = useState(null);
@@ -80,14 +88,6 @@ export default function App() {
   const [txHash, setTxHash] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('game');
-
-  const strikeWei = useMemo(() => {
-    // ✅ Both chains use the same STRIKE_WEI
-    return {
-      base: STRIKE_WEI,
-      hyperevm: STRIKE_WEI
-    };
-  }, []);
 
   const strikeLabel = (key) => `${CHAINS[key].strikeAmountDecimal} ${CHAINS[key].strikeSymbol}`;
 
@@ -120,7 +120,7 @@ export default function App() {
     try {
       const [baseRes, hyperRes] = await Promise.all([
         fetch(`${BACKEND_URL}/api/leaderboard/base`),
-        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`)
+        fetch(`${BACKEND_URL}/api/leaderboard/hyperevm`),
       ]);
 
       const [baseData, hyperData] = await Promise.all([baseRes.json(), hyperRes.json()]);
@@ -150,9 +150,9 @@ export default function App() {
   };
 
   const supportsHyperEvmInHost = () => {
-    // outside Farcaster: allow trying
+    // Outside Farcaster: let user try (their wallet decides)
     if (!isMiniApp) return true;
-    // inside Farcaster: only enable if host reports it
+    // Inside Farcaster: only enable if host reports it
     return chains.includes('eip155:999') || chains.includes('eip155:53460');
   };
 
@@ -172,13 +172,7 @@ export default function App() {
         await sdk.actions.ready();
       } catch {}
 
-      // detect caps/chains (do NOT show to users)
-      try {
-        const caps = await sdk.getCapabilities();
-        setCapabilities(Array.isArray(caps) ? caps : []);
-      } catch {
-        setCapabilities([]);
-      }
+      // detect chains (do NOT display)
       try {
         const chs = await sdk.getChains();
         setChains(Array.isArray(chs) ? chs : []);
@@ -186,11 +180,10 @@ export default function App() {
         setChains([]);
       }
 
-      // pick provider
-      const supportsWallet = capabilities.includes('wallet.getEthereumProvider');
+      // provider selection
       let provider = null;
 
-      // If we are in miniapp, prefer farcaster provider when available
+      // Prefer Farcaster provider when inside miniapp
       if (mini) {
         try {
           provider = await sdk.wallet.getEthereumProvider();
@@ -200,7 +193,7 @@ export default function App() {
         }
       }
 
-      // fallback for browsers
+      // Fallback for browsers
       if (!provider && typeof window !== 'undefined') {
         provider = window.ethereum || null;
         if (provider) setWalletMode('browser');
@@ -221,6 +214,7 @@ export default function App() {
     try {
       setLoading(true);
       setStatus('Connecting Farcaster wallet...');
+
       const provider = await sdk.wallet.getEthereumProvider();
       setEthProvider(provider);
       setWalletMode('farcaster');
@@ -245,6 +239,7 @@ export default function App() {
     try {
       setLoading(true);
       setStatus('Connecting browser wallet...');
+
       const provider = typeof window !== 'undefined' ? window.ethereum : null;
       if (!provider?.request) throw new Error('No browser wallet found.');
 
@@ -299,7 +294,7 @@ export default function App() {
     }
 
     const chain = CHAINS[chainKey];
-    const valueHex = toHexWei(strikeWei[chainKey]); // ✅ now exact value
+    const valueHex = toHexWei(STRIKE_WEI[chainKey]);
 
     try {
       setLoading(true);
@@ -316,7 +311,7 @@ export default function App() {
         from: account,
         to: chain.contractAddress,
         value: valueHex,
-        data: '0x'
+        data: '0x',
       };
 
       setStatus(`Confirm strike: Send ${strikeLabel(chainKey)}...`);
@@ -399,9 +394,7 @@ export default function App() {
                   <p className="text-white font-mono text-sm">{shortAddr(account)}</p>
                   <p className="text-gray-400 text-sm mt-2">Chain ID</p>
                   <p className="text-white font-bold">{currentChainId || 'Unknown'}</p>
-                  <p className="text-gray-500 text-xs mt-2">
-                    Connected via: {walletMode || 'unknown'}
-                  </p>
+                  <p className="text-gray-500 text-xs mt-2">Connected via: {walletMode || 'unknown'}</p>
                 </div>
 
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700">
@@ -454,7 +447,11 @@ export default function App() {
                 disabled={!account || loading || (isMiniApp && !supportsHyperEvmInHost())}
                 className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2 border-2 border-red-400"
               >
-                {loading ? 'Striking...' : isMiniApp && !supportsHyperEvmInHost() ? 'Not supported in host' : 'Strike HyperEVM'}
+                {loading
+                  ? 'Striking...'
+                  : isMiniApp && !supportsHyperEvmInHost()
+                  ? 'Not supported in host'
+                  : 'Strike HyperEVM'}
               </button>
             </div>
           </div>
