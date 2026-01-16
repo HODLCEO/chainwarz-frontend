@@ -3,11 +3,8 @@ import { Wallet, ExternalLink, Shield, Swords, Crown } from "lucide-react";
 import { sdk } from "@farcaster/miniapp-sdk";
 
 const BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL ||
-  "https://chainwarz-backend-production.up.railway.app";
+  import.meta.env.VITE_BACKEND_URL || "https://chainwarz-backend-production.up.railway.app";
 
-// NOTE: We keep contract+chain config here only for sending tx.
-// Leaderboard/Profile identity comes from FID + backend.
 const CHAINS = {
   base: {
     key: "base",
@@ -16,13 +13,9 @@ const CHAINS = {
     rpcUrl: "https://mainnet.base.org",
     blockExplorer: "https://basescan.org",
     contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
-
-    // Base strike amount candidates:
-    // You asked to prefer 0.000001337, but if contract requires the “42069” amount
-    // this will auto-fallback via estimateGas.
-    strikeCandidatesWei: [1337000000000n, 1337420690000n],
+    // ✅ EXACT: 0.000001337 ETH
+    valueWei: 1337000000000n, // hex: 0x1374b68fa00
     strikeLabel: "0.000001337 ETH",
-
     nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   },
   hyperevm: {
@@ -32,7 +25,7 @@ const CHAINS = {
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     blockExplorer: "https://hyperevmscan.io",
     contractAddress: "0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02",
-    strikeCandidatesWei: [133700000000000n], // 0.0001337 HYPE
+    valueWei: 133700000000000n, // 0.0001337 HYPE
     strikeLabel: "0.0001337 HYPE",
     nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
   },
@@ -49,9 +42,7 @@ const RANKS = [
 ];
 
 function getRank(totalStrikes) {
-  for (let i = RANKS.length - 1; i >= 0; i--) {
-    if (totalStrikes >= RANKS[i].min) return RANKS[i];
-  }
+  for (let i = RANKS.length - 1; i >= 0; i--) if (totalStrikes >= RANKS[i].min) return RANKS[i];
   return RANKS[0];
 }
 
@@ -65,6 +56,8 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const [inMiniApp, setInMiniApp] = useState(false);
+
   // Providers
   const [fcProvider, setFcProvider] = useState(null);
   const [browserProvider, setBrowserProvider] = useState(null);
@@ -73,20 +66,18 @@ export default function App() {
   // Wallet state
   const [account, setAccount] = useState(null);
   const [currentChainId, setCurrentChainId] = useState(null);
-  const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
+  const [lastTx, setLastTx] = useState(null);
 
-  // Farcaster user context (FID is the key!)
+  // Farcaster context user
   const [fcUser, setFcUser] = useState(null);
 
   // Data
   const [profileCounts, setProfileCounts] = useState({ base: 0, hyperevm: 0 });
-  const [profileIdentity, setProfileIdentity] = useState(null); // displayName, username, pfpUrl, bio, warpcastUrl
+  const [profileIdentity, setProfileIdentity] = useState(null);
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   const totalStrikes = (profileCounts.base || 0) + (profileCounts.hyperevm || 0);
   const currentRank = useMemo(() => getRank(totalStrikes), [totalStrikes]);
-
-  const inMiniApp = !!fcUser?.fid;
 
   const getActiveProvider = () => {
     if (connectedVia === "farcaster" && fcProvider) return fcProvider;
@@ -119,61 +110,76 @@ export default function App() {
     }
   };
 
-  // ✅ Profile: if we have FID, we pull merged wallet counts + identity by FID
-  const loadProfile = async (addr) => {
+  // ✅ New: load merged counts by FID (when inside Farcaster host)
+  const loadCountsForFid = async (fid) => {
     try {
-      if (fcUser?.fid) {
-        const r = await fetch(`${BACKEND_URL}/api/profile/by-fid/${fcUser.fid}`);
-        const data = await r.json();
-        setProfileCounts({
-          base: data?.txCount?.base || 0,
-          hyperevm: data?.txCount?.hyperevm || 0,
-        });
-        setProfileIdentity(data?.identity || null);
-        return;
-      }
+      const r = await fetch(`${BACKEND_URL}/api/profile/fid/${fid}`);
+      const data = await r.json();
+      setProfileCounts({
+        base: data?.txCount?.base || 0,
+        hyperevm: data?.txCount?.hyperevm || 0,
+      });
+      if (data?.user) setProfileIdentity(data.user);
+    } catch {
+      setProfileCounts({ base: 0, hyperevm: 0 });
+    }
+  };
 
-      // Fallback: by address
-      if (!addr) return;
+  const loadCountsForAddress = async (addr) => {
+    try {
       const r = await fetch(`${BACKEND_URL}/api/profile/${addr}`);
       const data = await r.json();
       setProfileCounts({
         base: data?.txCount?.base || 0,
         hyperevm: data?.txCount?.hyperevm || 0,
       });
-      setProfileIdentity(data?.identity || null);
     } catch {
       setProfileCounts({ base: 0, hyperevm: 0 });
-      setProfileIdentity(null);
     }
   };
 
-  // Init
+  const loadFarcasterIdentityByFid = async (fid) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/farcaster/user/${fid}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  // INIT
   useEffect(() => {
     const init = async () => {
-      // Browser wallet provider
-      if (typeof window !== "undefined" && window.ethereum) {
-        setBrowserProvider(window.ethereum);
-      }
+      // Browser wallet
+      if (typeof window !== "undefined" && window.ethereum) setBrowserProvider(window.ethereum);
 
       // Miniapp context + Farcaster provider
       try {
         const mini = await sdk.isInMiniApp();
+        setInMiniApp(!!mini);
+
         if (mini) {
-          // Context is synchronous; "ready" is the important call
-          await sdk.actions.ready();
-          const ctx = sdk.context;
+          const ctx = await sdk.context; // ✅ this is the key: actually use the returned context
           setFcUser(ctx?.user || null);
+
+          await sdk.actions.ready();
 
           const caps = await sdk.getCapabilities();
           if (caps.includes("wallet.getEthereumProvider")) {
             const p = await sdk.wallet.getEthereumProvider();
             if (p) setFcProvider(p);
           }
+
+          // ✅ Immediately hydrate identity & merged counts via FID
+          if (ctx?.user?.fid) {
+            const ident = await loadFarcasterIdentityByFid(ctx.user.fid);
+            if (ident) setProfileIdentity(ident);
+            await loadCountsForFid(ctx.user.fid);
+          }
         }
       } catch {}
 
-      // Load leaderboards immediately
       loadLeaderboards();
     };
 
@@ -181,12 +187,22 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When we enter Profile tab, refresh profile (merged by fid when available)
+  // When account changes:
+  // - If in MiniApp and we have fid → always show merged-by-fid counts
+  // - Else → address-only counts
   useEffect(() => {
-    if (activeTab !== "profile") return;
-    loadProfile(account);
+    const run = async () => {
+      if (inMiniApp && fcUser?.fid) {
+        const ident = await loadFarcasterIdentityByFid(fcUser.fid);
+        if (ident) setProfileIdentity(ident);
+        await loadCountsForFid(fcUser.fid);
+      } else if (account) {
+        await loadCountsForAddress(account);
+      }
+    };
+    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, account, fcUser?.fid]);
+  }, [account, inMiniApp, fcUser?.fid]);
 
   const requestAccounts = async (provider, viaLabel) => {
     if (!provider?.request) {
@@ -210,13 +226,20 @@ export default function App() {
       setStatus("Connected.");
 
       await refreshChainId();
-      await loadProfile(addr);
+
+      // ✅ If in host, prefer fid-based merge totals + identity
+      if (inMiniApp && fcUser?.fid) {
+        const ident = await loadFarcasterIdentityByFid(fcUser.fid);
+        if (ident) setProfileIdentity(ident);
+        await loadCountsForFid(fcUser.fid);
+      } else {
+        await loadCountsForAddress(addr);
+      }
 
       if (provider.on) {
         provider.on("accountsChanged", (accs) => {
           const a = accs?.[0] || null;
           setAccount(a);
-          if (a) loadProfile(a);
         });
         provider.on("chainChanged", () => refreshChainId());
       }
@@ -236,10 +259,7 @@ export default function App() {
     if (!p?.request) throw new Error("No provider");
 
     try {
-      await p.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: chain.chainIdHex }],
-      });
+      await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: chain.chainIdHex }] });
     } catch (err) {
       if (err?.code === 4902) {
         await p.request({
@@ -262,39 +282,12 @@ export default function App() {
     await refreshChainId();
   };
 
-  // ✅ Auto-pick correct strike amount using estimateGas (prevents “Incorrect strike amount” surprises)
-  const pickStrikeValueHex = async (chainKey, from) => {
-    const chain = CHAINS[chainKey];
-    const p = getActiveProvider();
-
-    for (const wei of chain.strikeCandidatesWei) {
-      const valueHex = "0x" + wei.toString(16);
-      try {
-        await p.request({
-          method: "eth_estimateGas",
-          params: [{ from, to: chain.contractAddress, value: valueHex, data: "0x" }],
-        });
-        return valueHex; // first candidate that estimates successfully
-      } catch {
-        // try next candidate
-      }
-    }
-    // fallback to first candidate (wallet may still show a clear revert)
-    return "0x" + chain.strikeCandidatesWei[0].toString(16);
-  };
-
   const sendStrike = async (chainKey) => {
     const chain = CHAINS[chainKey];
     const p = getActiveProvider();
 
-    if (!account) {
-      setStatus("Connect a wallet first.");
-      return;
-    }
-    if (!p?.request) {
-      setStatus("No wallet provider available.");
-      return;
-    }
+    if (!account) return setStatus("Connect a wallet first.");
+    if (!p?.request) return setStatus("No wallet provider available.");
 
     try {
       setLoading(true);
@@ -302,8 +295,7 @@ export default function App() {
 
       await switchOrAddChain(chainKey);
 
-      setStatus("Checking strike amount…");
-      const valueHex = await pickStrikeValueHex(chainKey, account);
+      const valueHex = "0x" + chain.valueWei.toString(16);
 
       setStatus("Confirm the transaction in your wallet…");
       const hash = await p.request({
@@ -316,7 +308,8 @@ export default function App() {
 
       setTimeout(() => {
         loadLeaderboards();
-        loadProfile(account);
+        if (inMiniApp && fcUser?.fid) loadCountsForFid(fcUser.fid);
+        else if (account) loadCountsForAddress(account);
       }, 2500);
     } catch {
       setStatus("Transaction cancelled or failed.");
@@ -331,11 +324,15 @@ export default function App() {
     return `${chain.blockExplorer}/tx/${lastTx.hash}`;
   };
 
-  // --- Profile display priority ---
-  // If miniapp context exists, use it as fallback even if backend identity is missing.
+  // Identity display priority:
+  // 1) backend (by fid)
+  // 2) fc context user
+  // 3) fallback
   const displayName =
     profileIdentity?.displayName ||
-    (fcUser?.displayName || fcUser?.username) ||
+    profileIdentity?.display_name ||
+    fcUser?.displayName ||
+    fcUser?.username ||
     (account ? shortAddr(account) : "Unknown");
 
   const username =
@@ -344,16 +341,20 @@ export default function App() {
 
   const pfpUrl =
     profileIdentity?.pfpUrl ||
+    profileIdentity?.pfp_url ||
     fcUser?.pfpUrl ||
     (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
 
   const bio =
-    profileIdentity?.bio || "";
+    profileIdentity?.bio ||
+    profileIdentity?.profile?.bio?.text ||
+    "";
 
-  const warpcastUrl =
-    profileIdentity?.warpcastUrl ||
-    (profileIdentity?.username ? `https://warpcast.com/${profileIdentity.username}` : null) ||
-    (fcUser?.username ? `https://warpcast.com/${fcUser.username}` : null);
+  // Use farcaster.xyz link (works even if names/domains change, and avoids “warpcast is gone” drama)
+  const profileUrl =
+    profileIdentity?.farcasterUrl ||
+    (profileIdentity?.username ? `https://farcaster.xyz/${profileIdentity.username}` : null) ||
+    (fcUser?.username ? `https://farcaster.xyz/${fcUser.username}` : null);
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -434,7 +435,6 @@ export default function App() {
               </div>
 
               {connectedVia ? <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div> : null}
-              {inMiniApp ? <div className="mt-1 text-xs text-gray-600">Miniapp identity (FID): {fcUser.fid}</div> : null}
             </div>
 
             <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
@@ -472,7 +472,7 @@ export default function App() {
 
         {activeTab === "profile" && (
           <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-            {!account && !inMiniApp ? (
+            {!account ? (
               <div className="text-gray-300">Connect a wallet to see your strike counts.</div>
             ) : (
               <div className="flex gap-3">
@@ -485,17 +485,16 @@ export default function App() {
                   <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
                   <div className="font-bold truncate">{displayName}</div>
                   {username ? <div className="text-sm text-gray-400 truncate">{username}</div> : null}
-
                   {bio ? <div className="mt-2 text-sm text-gray-300">{bio}</div> : null}
 
-                  {warpcastUrl ? (
+                  {profileUrl ? (
                     <a
-                      href={warpcastUrl}
+                      href={profileUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="mt-2 inline-flex items-center gap-2 text-sm text-gray-200 underline"
                     >
-                      View on Warpcast <ExternalLink size={16} />
+                      View on Farcaster <ExternalLink size={16} />
                     </a>
                   ) : null}
 
@@ -531,30 +530,23 @@ export default function App() {
                 <div className="space-y-2">
                   {leaderboard.base.slice(0, 10).map((p) => (
                     <div
-                      key={`b-${p.fid ? `fid-${p.fid}` : p.address}`}
+                      key={`b-${p.fid || p.address || p.rank}`}
                       className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
                     >
-                      <div className="w-8 text-center font-extrabold text-gray-300">#{p.rank}</div>
-
+                      <div className="w-10 text-center font-extrabold text-gray-300">#{p.rank}</div>
                       {p.pfpUrl ? (
                         <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
                       ) : (
-                        <div className="w-8 h-8 rounded-full border border-gray-700 bg-gray-900" />
+                        <div className="w-8 h-8 rounded-full border border-gray-700" />
                       )}
-
                       <div className="flex-1 min-w-0">
                         <div className="font-bold truncate text-gray-200">
-                          {p.username ? `@${p.username}` : p.displayName ? p.displayName : shortAddr(p.address)}
+                          {p.username ? p.username : p.address ? shortAddr(p.address) : "Unknown"}
                         </div>
-
-                        {/* ✅ IMPORTANT: if this is a Farcaster-merged row, we DO NOT show any wallet address */}
-                        {!p.fid && p.address ? (
-                          <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
-                        ) : p.walletCount > 1 ? (
-                          <div className="text-xs text-gray-500 truncate">{p.walletCount} wallets merged</div>
-                        ) : null}
+                        <div className="text-xs text-gray-500 truncate">
+                          {p.walletCount > 1 ? `${p.walletCount} wallets merged` : "1 wallet"}
+                        </div>
                       </div>
-
                       <div className="font-extrabold text-blue-300">{p.txCount}</div>
                     </div>
                   ))}
@@ -576,28 +568,23 @@ export default function App() {
                 <div className="space-y-2">
                   {leaderboard.hyperevm.slice(0, 10).map((p) => (
                     <div
-                      key={`h-${p.fid ? `fid-${p.fid}` : p.address}`}
+                      key={`h-${p.fid || p.address || p.rank}`}
                       className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
                     >
-                      <div className="w-8 text-center font-extrabold text-gray-300">#{p.rank}</div>
-
+                      <div className="w-10 text-center font-extrabold text-gray-300">#{p.rank}</div>
                       {p.pfpUrl ? (
                         <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
                       ) : (
-                        <div className="w-8 h-8 rounded-full border border-gray-700 bg-gray-900" />
+                        <div className="w-8 h-8 rounded-full border border-gray-700" />
                       )}
-
                       <div className="flex-1 min-w-0">
                         <div className="font-bold truncate text-gray-200">
-                          {p.username ? `@${p.username}` : p.displayName ? p.displayName : shortAddr(p.address)}
+                          {p.username ? p.username : p.address ? shortAddr(p.address) : "Unknown"}
                         </div>
-                        {!p.fid && p.address ? (
-                          <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
-                        ) : p.walletCount > 1 ? (
-                          <div className="text-xs text-gray-500 truncate">{p.walletCount} wallets merged</div>
-                        ) : null}
+                        <div className="text-xs text-gray-500 truncate">
+                          {p.walletCount > 1 ? `${p.walletCount} wallets merged` : "1 wallet"}
+                        </div>
                       </div>
-
                       <div className="font-extrabold text-green-300">{p.txCount}</div>
                     </div>
                   ))}
