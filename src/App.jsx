@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Wallet, ExternalLink, Shield, Swords, Crown } from "lucide-react";
 import { sdk } from "@farcaster/miniapp-sdk";
-import "./App.css";
 
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
@@ -10,19 +9,19 @@ const BACKEND_URL =
 const CHAINS = {
   base: {
     key: "base",
-    chainIdHex: "0x2105", // 8453
+    chainIdHex: "0x2105",
     name: "Base",
     rpcUrl: "https://mainnet.base.org",
     blockExplorer: "https://basescan.org",
     contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
-    // ✅ correct amount for your current Base contract
-    valueWei: 1337420690000n,
-    strikeLabel: "0.00000133742069 ETH",
+    // ✅ user requested base strike should be 0.000001337
+    valueWei: 1337000000000n, // 0.000001337 ETH
+    strikeLabel: "0.000001337 ETH",
     nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   },
   hyperevm: {
     key: "hyperevm",
-    chainIdHex: "0x3e7", // 999
+    chainIdHex: "0x3e7",
     name: "HyperEVM",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     blockExplorer: "https://hyperevmscan.io",
@@ -34,13 +33,13 @@ const CHAINS = {
 };
 
 const RANKS = [
-  { name: "Squire", min: 0, className: "rank-squire" },
-  { name: "Knight", min: 1, className: "rank-knight" },
-  { name: "Knight Captain", min: 5, className: "rank-captain" },
-  { name: "Baron", min: 10, className: "rank-baron" },
-  { name: "Duke", min: 25, className: "rank-duke" },
-  { name: "Warlord", min: 50, className: "rank-warlord" },
-  { name: "Legendary Champion", min: 100, className: "rank-legend" },
+  { name: "Squire", min: 0, className: "text-gray-300" },
+  { name: "Knight", min: 1, className: "text-blue-300" },
+  { name: "Knight Captain", min: 5, className: "text-purple-300" },
+  { name: "Baron", min: 10, className: "text-yellow-300" },
+  { name: "Duke", min: 25, className: "text-orange-300" },
+  { name: "Warlord", min: 50, className: "text-red-300" },
+  { name: "Legendary Champion", min: 100, className: "text-pink-300" },
 ];
 
 function getRank(totalStrikes) {
@@ -53,17 +52,6 @@ function getRank(totalStrikes) {
 function shortAddr(a) {
   if (!a) return "";
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
-}
-
-function TabButton({ active, onClick, icon, label }) {
-  return (
-    <button onClick={onClick} className={`cw-tab ${active ? "active" : ""}`}>
-      <span className="cw-tabIcon" aria-hidden>
-        {icon}
-      </span>
-      <span>{label}</span>
-    </button>
-  );
 }
 
 export default function App() {
@@ -81,8 +69,9 @@ export default function App() {
   const [currentChainId, setCurrentChainId] = useState(null);
   const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
 
-  // Farcaster context user
+  // Farcaster context user (fid/username/etc)
   const [fcUser, setFcUser] = useState(null);
+  const [isInHost, setIsInHost] = useState(false);
 
   // Data
   const [profileCounts, setProfileCounts] = useState({ base: 0, hyperevm: 0 });
@@ -95,7 +84,6 @@ export default function App() {
   const getActiveProvider = () => {
     if (connectedVia === "farcaster" && fcProvider) return fcProvider;
     if (connectedVia === "browser" && browserProvider) return browserProvider;
-    // Prefer Farcaster provider in-host
     if (fcProvider) return fcProvider;
     return browserProvider || null;
   };
@@ -137,14 +125,12 @@ export default function App() {
     }
   };
 
-  const loadFarcasterIdentity = async () => {
+  // ✅ BEST: real Farcaster profile comes from FID (not from wallet address)
+  const loadFarcasterIdentityByFid = async (fid) => {
+    if (!fid) return null;
     try {
-      const fid = fcUser?.fid;
-      if (!fid) return null;
-
       const res = await fetch(`${BACKEND_URL}/api/farcaster/user/${fid}`);
       if (!res.ok) return null;
-
       return await res.json();
     } catch {
       return null;
@@ -162,18 +148,34 @@ export default function App() {
       // Miniapp context + Farcaster provider
       try {
         const mini = await sdk.isInMiniApp();
+        setIsInHost(!!mini);
+
         if (mini) {
-          await sdk.context;
-          await sdk.actions.ready();
-          setFcUser(sdk.context?.user || null);
+          // Important ordering: context -> capabilities -> provider -> ready
+          const ctx = sdk.context;
+          setFcUser(ctx?.user || null);
 
           const caps = await sdk.getCapabilities();
           if (caps.includes("wallet.getEthereumProvider")) {
             const p = await sdk.wallet.getEthereumProvider();
             if (p) setFcProvider(p);
           }
+
+          await sdk.actions.ready();
+
+          // If we have an fid, prefetch identity immediately
+          const fid = ctx?.user?.fid;
+          if (fid) {
+            const ident = await loadFarcasterIdentityByFid(fid);
+            if (ident) setProfileIdentity(ident);
+          } else {
+            // fallback: at least keep whatever context provides
+            if (ctx?.user) setProfileIdentity(ctx.user);
+          }
         }
-      } catch {}
+      } catch {
+        // ignore
+      }
 
       loadLeaderboards();
     };
@@ -182,17 +184,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When profile tab is opened, try to load identity
+  // When profile tab opens, refresh identity again (in case it was slow)
   useEffect(() => {
     const run = async () => {
       if (activeTab !== "profile") return;
-      const ident = await loadFarcasterIdentity();
-      if (ident) setProfileIdentity(ident);
+      const fid = fcUser?.fid;
+      if (fid) {
+        const ident = await loadFarcasterIdentityByFid(fid);
+        if (ident) setProfileIdentity(ident);
+      }
     };
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, fcUser?.fid]);
 
+  // Connect
   const requestAccounts = async (provider, viaLabel) => {
     if (!provider?.request) {
       setStatus("No wallet provider found.");
@@ -201,11 +207,7 @@ export default function App() {
 
     try {
       setLoading(true);
-      setStatus(
-        viaLabel === "farcaster"
-          ? "Connecting Farcaster wallet…"
-          : "Connecting browser wallet…"
-      );
+      setStatus(viaLabel === "farcaster" ? "Connecting Farcaster wallet…" : "Connecting browser wallet…");
 
       const accounts = await provider.request({ method: "eth_requestAccounts" });
       const addr = accounts?.[0];
@@ -221,8 +223,12 @@ export default function App() {
       await refreshChainId();
       await loadCountsForAddress(addr);
 
-      const ident = await loadFarcasterIdentity();
-      if (ident) setProfileIdentity(ident);
+      // If in host, identity should come from fid, regardless of wallet address
+      const fid = fcUser?.fid;
+      if (fid) {
+        const ident = await loadFarcasterIdentityByFid(fid);
+        if (ident) setProfileIdentity(ident);
+      }
 
       if (provider.on) {
         provider.on("accountsChanged", (accs) => {
@@ -321,11 +327,12 @@ export default function App() {
     return `${chain.blockExplorer}/tx/${lastTx.hash}`;
   };
 
-  // Identity display priority
+  // Profile display (prefer backend by fid; fallback to sdk.context.user; fallback to address)
   const displayName =
     profileIdentity?.displayName ||
     profileIdentity?.display_name ||
-    (fcUser?.displayName || fcUser?.username) ||
+    fcUser?.displayName ||
+    fcUser?.username ||
     (account ? shortAddr(account) : "Unknown");
 
   const username =
@@ -338,308 +345,382 @@ export default function App() {
     fcUser?.pfpUrl ||
     (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
 
-  const bio = profileIdentity?.bio || profileIdentity?.profile?.bio?.text || "";
+  const bio =
+    profileIdentity?.bio ||
+    profileIdentity?.profile?.bio?.text ||
+    fcUser?.bio ||
+    "";
 
   const warpcastUrl =
     profileIdentity?.warpcastUrl ||
     (profileIdentity?.username ? `https://warpcast.com/${profileIdentity.username}` : null) ||
     (fcUser?.username ? `https://warpcast.com/${fcUser.username}` : null);
 
-  const connectedLabel = account ? (connectedVia || "host") : "not connected";
-
+  // --- UI / styling ---
   return (
-    <div className="cw-root">
-      <div className="cw-shell">
-        {/* HEADER */}
-        <header className="cw-header">
-          <div className="cw-mark">
-            <div className="cw-shieldMark" aria-hidden>
-              <Shield size={18} />
-            </div>
+    <div className="min-h-screen text-white cw-root">
+      <style>{castleCss}</style>
+
+      <div className="max-w-md mx-auto p-4">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="cw-shieldBadge" aria-hidden>⛨</div>
             <div>
-              <h1 className="cw-title">ChainWarZ</h1>
-              <p className="cw-subtitle">Strike chains. Climb ranks. Dominate.</p>
+              <h1 className="text-3xl font-extrabold tracking-tight">ChainWarZ</h1>
+              <p className="text-gray-300 mt-1 text-sm">Strike chains. Climb ranks. Dominate.</p>
             </div>
           </div>
 
-          <div className="cw-connection">
-            <div className="cw-chip">
-              <span className="cw-dot" />
-              <span>
-                Connected via <b>{connectedLabel}</b>
-              </span>
-            </div>
-            <div className="cw-addr">{account ? shortAddr(account) : "—"}</div>
+          <div className="text-right">
+            {connectedVia ? (
+              <div className="cw-chip">
+                <span className="cw-dot" />
+                Connected via <b className="ml-1">{connectedVia}</b>
+              </div>
+            ) : (
+              <div className="cw-chip opacity-80">
+                <span className="cw-dot cw-dot--off" />
+                Not connected
+              </div>
+            )}
+            {account ? <div className="mt-2 text-xs text-gray-300">{shortAddr(account)}</div> : null}
           </div>
-        </header>
+        </div>
 
-        {/* TABS */}
-        <nav className="cw-tabs" aria-label="Primary">
-          <TabButton
-            active={activeTab === "game"}
+        <div className="cw-tabs mb-4">
+          <button
             onClick={() => setActiveTab("game")}
-            icon={<Swords size={16} />}
-            label="Game"
-          />
-          <TabButton
-            active={activeTab === "profile"}
+            className={`cw-tab ${activeTab === "game" ? "cw-tab--active" : ""}`}
+          >
+            <Swords size={16} /> Game
+          </button>
+          <button
             onClick={() => setActiveTab("profile")}
-            icon={<Shield size={16} />}
-            label="Profile"
-          />
-          <TabButton
-            active={activeTab === "leaderboard"}
+            className={`cw-tab ${activeTab === "profile" ? "cw-tab--active" : ""}`}
+          >
+            <Shield size={16} /> Profile
+          </button>
+          <button
             onClick={() => setActiveTab("leaderboard")}
-            icon={<Crown size={16} />}
-            label="Leaderboard"
-          />
-        </nav>
+            className={`cw-tab ${activeTab === "leaderboard" ? "cw-tab--active" : ""}`}
+          >
+            <Crown size={16} /> Leaderboard
+          </button>
+        </div>
 
-        {/* STATUS */}
-        {status ? (
-          <div className="cw-card cw-status">
-            <p className="cw-muted">{status}</p>
-          </div>
-        ) : null}
+        {status ? <div className="cw-toast mb-4">{status}</div> : null}
 
-        {/* GAME */}
         {activeTab === "game" && (
-          <main className="cw-grid">
-            <section className="cw-card">
-              <h2>Connect</h2>
-              <p className="cw-muted">
-                Farcaster wallet (in-host) or Browser wallet.
-              </p>
+          <div className="space-y-4">
+            <div className="cw-card p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs text-gray-400">Wallet</div>
+                  <div className="font-bold">{account ? shortAddr(account) : "Not connected"}</div>
+                  {currentChainId ? <div className="text-xs text-gray-400 mt-1">Chain: {currentChainId}</div> : null}
+                </div>
+                <Wallet className="text-gray-300" />
+              </div>
 
-              <div className="cw-row">
+              <div className="mt-3 flex gap-2">
                 <button
-                  className={`cw-btn primary ${!fcProvider ? "disabled" : ""}`}
                   onClick={() => requestAccounts(fcProvider, "farcaster")}
                   disabled={!fcProvider || loading}
+                  className={`cw-btn ${fcProvider ? "cw-btn--primary" : "cw-btn--disabled"}`}
                 >
-                  <span className="cw-btnIcon" aria-hidden>
-                    <Wallet size={16} />
-                  </span>
                   Connect Farcaster
                 </button>
 
                 <button
-                  className={`cw-btn ${!browserProvider ? "disabled" : ""}`}
                   onClick={() => requestAccounts(browserProvider, "browser")}
                   disabled={!browserProvider || loading}
+                  className={`cw-btn ${browserProvider ? "" : "cw-btn--disabled"}`}
                 >
-                  <span className="cw-btnIcon" aria-hidden>
-                    <Wallet size={16} />
-                  </span>
                   Connect Browser
                 </button>
               </div>
 
-              <div className="cw-divider" />
-
-              <div className="cw-statRow">
-                <div className="cw-stat">
-                  <div className="cw-statK">Total strikes</div>
-                  <div className="cw-statV">{totalStrikes}</div>
+              {isInHost && !fcProvider ? (
+                <div className="mt-2 text-xs text-gray-400">
+                  Host detected, but wallet provider capability not available in this host.
                 </div>
-                <div className="cw-stat">
-                  <div className="cw-statK">Current rank</div>
-                  <div className={`cw-statV ${currentRank.className}`}>
-                    {currentRank.name}
-                  </div>
-                </div>
-              </div>
-
-              {currentChainId ? (
-                <div className="cw-footNote">Chain: {currentChainId}</div>
               ) : null}
-            </section>
+            </div>
 
-            <section className="cw-card cw-cardGlow">
-              <h2>Strike</h2>
-              <p className="cw-muted">Send a tiny value to record your strike.</p>
+            <div className="cw-card p-4">
+              <div className="font-bold mb-3">Strike</div>
 
               <button
                 onClick={() => sendStrike("base")}
                 disabled={!account || loading}
-                className={`cw-strike cw-strikeBase ${!account ? "disabled" : ""}`}
+                className="cw-strike cw-strike--base disabled:opacity-50"
               >
                 <div>
-                  <div className="cw-strikeH">Base</div>
-                  <div className="cw-strikeS">{CHAINS.base.strikeLabel}</div>
+                  <div className="cw-strike__h">Base</div>
+                  <div className="cw-strike__s">{CHAINS.base.strikeLabel}</div>
                 </div>
-                <span className="cw-pill">
-                  <Swords size={14} /> Strike
-                </span>
+                <span className="cw-pill">Strike</span>
               </button>
 
               <button
                 onClick={() => sendStrike("hyperevm")}
                 disabled={!account || loading}
-                className={`cw-strike cw-strikeHyper ${!account ? "disabled" : ""}`}
+                className="cw-strike cw-strike--hyper disabled:opacity-50"
               >
                 <div>
-                  <div className="cw-strikeH">HyperEVM</div>
-                  <div className="cw-strikeS">{CHAINS.hyperevm.strikeLabel}</div>
+                  <div className="cw-strike__h">HyperEVM</div>
+                  <div className="cw-strike__s">{CHAINS.hyperevm.strikeLabel}</div>
                 </div>
-                <span className="cw-pill">
-                  <Swords size={14} /> Strike
-                </span>
+                <span className="cw-pill">Strike</span>
               </button>
 
               {lastTx?.hash ? (
-                <div className="cw-lastTx">
-                  <span className="cw-muted">Last tx</span>
-                  <a
-                    className="cw-link"
-                    href={explorerTxUrl()}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {shortAddr(lastTx.hash)} <ExternalLink size={14} />
-                  </a>
-                </div>
+                <a href={explorerTxUrl()} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-sm text-gray-200 underline">
+                  View last tx <ExternalLink size={16} />
+                </a>
               ) : null}
-            </section>
-          </main>
+            </div>
+          </div>
         )}
 
-        {/* PROFILE */}
         {activeTab === "profile" && (
-          <main className="cw-card">
+          <div className="cw-card p-4">
             {!account ? (
-              <p className="cw-muted">Connect a wallet to see your profile.</p>
+              <div className="text-gray-300">Connect a wallet to see your strike counts.</div>
             ) : (
-              <>
-                <div className="cw-profile">
-                  {/* Smaller PFP (40–60% vibe) */}
-                  <img
-                    src={pfpUrl}
-                    alt="pfp"
-                    className="cw-pfp"
-                    style={{ width: 56, height: 56 }}
-                  />
+              <div className="flex gap-3">
+                {/* ✅ smaller profile picture */}
+                <img
+                  src={pfpUrl}
+                  alt="pfp"
+                  className="w-14 h-14 rounded-2xl border border-white/10 object-cover"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
+                  <div className="font-bold truncate">{displayName}</div>
+                  {username ? <div className="text-sm text-gray-300/80 truncate">{username}</div> : null}
+                  {bio ? <div className="mt-2 text-sm text-gray-200/90">{bio}</div> : null}
 
-                  <div className="cw-profileMain">
-                    <div className={`cw-rank ${currentRank.className}`}>
-                      {currentRank.name}
+                  {warpcastUrl ? (
+                    <a href={warpcastUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm text-yellow-200 underline">
+                      View on Warpcast <ExternalLink size={16} />
+                    </a>
+                  ) : null}
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                    <div className="cw-mini">
+                      <div className="text-xs text-gray-400">Base strikes</div>
+                      <div className="text-xl font-extrabold">{profileCounts.base}</div>
                     </div>
-
-                    <div className="cw-name">{displayName}</div>
-
-                    {username ? (
-                      <div className="cw-handle">{username}</div>
-                    ) : null}
-
-                    {bio ? <div className="cw-bio">{bio}</div> : null}
-
-                    {warpcastUrl ? (
-                      <a
-                        className="cw-link"
-                        href={warpcastUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        View on Warpcast <ExternalLink size={14} />
-                      </a>
-                    ) : null}
+                    <div className="cw-mini">
+                      <div className="text-xs text-gray-400">HyperEVM strikes</div>
+                      <div className="text-xl font-extrabold">{profileCounts.hyperevm}</div>
+                    </div>
                   </div>
+
+                  <div className="mt-3 text-xs text-gray-500">Built for Farcaster Mini Apps</div>
                 </div>
-
-                <div className="cw-divider" />
-
-                <div className="cw-two">
-                  <div className="cw-mini">
-                    <div className="cw-miniK">Base strikes</div>
-                    <div className="cw-miniV">{profileCounts.base}</div>
-                  </div>
-                  <div className="cw-mini">
-                    <div className="cw-miniK">HyperEVM strikes</div>
-                    <div className="cw-miniV">{profileCounts.hyperevm}</div>
-                  </div>
-                </div>
-
-                <div className="cw-footNote">Running inside host</div>
-              </>
+              </div>
             )}
-          </main>
+          </div>
         )}
 
-        {/* LEADERBOARD */}
         {activeTab === "leaderboard" && (
-          <main className="cw-grid">
-            <section className="cw-card">
-              <div className="cw-cardHead">
-                <h2>Base Leaderboard</h2>
-                <button className="cw-linkBtn" onClick={loadLeaderboards} disabled={loading}>
+          <div className="space-y-4">
+            <div className="cw-card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-extrabold">Base Leaderboard</div>
+                <button className="text-sm underline text-yellow-200" onClick={loadLeaderboards} disabled={loading}>
                   Refresh
                 </button>
               </div>
 
               {leaderboard.base?.length ? (
-                <div className="cw-list">
+                <div className="space-y-2">
                   {leaderboard.base.slice(0, 10).map((p) => (
-                    <div key={`b-${p.address}`} className="cw-rowItem">
-                      <div className="cw-rankNum">#{p.rank}</div>
-                      <img
-                        src={p.pfpUrl}
-                        alt=""
-                        className="cw-avatarSm"
-                      />
-                      <div className="cw-rowName">
-                        <div className="cw-rowTop">
-                          {p.username || shortAddr(p.address)}
-                        </div>
-                        <div className="cw-rowSub">{shortAddr(p.address)}</div>
+                    <div key={`b-${p.fid || p.address}`} className="cw-rowItem">
+                      <div className="w-10 text-center font-extrabold text-gray-300">#{p.rank}</div>
+                      <img src={p.pfpUrl} alt="" className="w-9 h-9 rounded-full border border-white/10" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold truncate text-gray-100">{p.username || shortAddr(p.address)}</div>
+                        <div className="text-xs text-gray-500 truncate">{p.fid ? `FID ${p.fid}` : shortAddr(p.address)}</div>
                       </div>
-                      <div className="cw-rowScore cw-scoreBase">{p.txCount}</div>
+                      <div className="font-extrabold text-blue-200">{p.txCount}</div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="cw-muted">No data yet.</p>
+                <div className="text-gray-400 text-sm">No data yet.</div>
               )}
-            </section>
+            </div>
 
-            <section className="cw-card">
-              <div className="cw-cardHead">
-                <h2>HyperEVM Leaderboard</h2>
-                <button className="cw-linkBtn" onClick={loadLeaderboards} disabled={loading}>
+            <div className="cw-card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-extrabold">HyperEVM Leaderboard</div>
+                <button className="text-sm underline text-yellow-200" onClick={loadLeaderboards} disabled={loading}>
                   Refresh
                 </button>
               </div>
 
               {leaderboard.hyperevm?.length ? (
-                <div className="cw-list">
+                <div className="space-y-2">
                   {leaderboard.hyperevm.slice(0, 10).map((p) => (
-                    <div key={`h-${p.address}`} className="cw-rowItem">
-                      <div className="cw-rankNum">#{p.rank}</div>
-                      <img
-                        src={p.pfpUrl}
-                        alt=""
-                        className="cw-avatarSm"
-                      />
-                      <div className="cw-rowName">
-                        <div className="cw-rowTop">
-                          {p.username || shortAddr(p.address)}
-                        </div>
-                        <div className="cw-rowSub">{shortAddr(p.address)}</div>
+                    <div key={`h-${p.fid || p.address}`} className="cw-rowItem">
+                      <div className="w-10 text-center font-extrabold text-gray-300">#{p.rank}</div>
+                      <img src={p.pfpUrl} alt="" className="w-9 h-9 rounded-full border border-white/10" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold truncate text-gray-100">{p.username || shortAddr(p.address)}</div>
+                        <div className="text-xs text-gray-500 truncate">{p.fid ? `FID ${p.fid}` : shortAddr(p.address)}</div>
                       </div>
-                      <div className="cw-rowScore cw-scoreHyper">{p.txCount}</div>
+                      <div className="font-extrabold text-green-200">{p.txCount}</div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="cw-muted">No data yet.</p>
+                <div className="text-gray-400 text-sm">No data yet.</div>
               )}
-            </section>
-          </main>
+            </div>
+          </div>
         )}
-
-        <footer className="cw-footer">
-          <span className="cw-muted">Built for Farcaster Mini Apps</span>
-        </footer>
       </div>
     </div>
   );
 }
+
+const castleCss = `
+.cw-root{
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(243,211,107,.12), transparent 60%),
+    radial-gradient(900px 500px at 20% 10%, rgba(93,169,255,.08), transparent 55%),
+    radial-gradient(900px 500px at 80% 20%, rgba(102,242,181,.06), transparent 60%),
+    linear-gradient(180deg, #0b0c12, #07070a);
+  position:relative;
+  overflow:hidden;
+}
+.cw-root:before{
+  content:"";
+  position:absolute;
+  inset:-40px;
+  opacity:.28;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.05) 2px, transparent 2px) 0 0/120px 60px,
+    linear-gradient(0deg, rgba(255,255,255,.06) 2px, transparent 2px) 0 0/120px 60px,
+    linear-gradient(90deg, rgba(0,0,0,.25) 1px, transparent 1px) 0 0/120px 60px,
+    linear-gradient(90deg, rgba(255,255,255,.05) 2px, transparent 2px) 60px 30px/120px 60px,
+    linear-gradient(0deg, rgba(255,255,255,.06) 2px, transparent 2px) 60px 30px/120px 60px;
+  pointer-events:none;
+}
+.cw-shieldBadge{
+  width:44px;height:44px;border-radius:14px;
+  display:grid;place-items:center;
+  background: linear-gradient(180deg, rgba(243,211,107,.18), rgba(243,211,107,.06));
+  border:1px solid rgba(243,211,107,.22);
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  font-size:20px;
+}
+.cw-chip{
+  display:inline-flex; gap:8px; align-items:center;
+  padding:8px 10px;
+  border-radius:999px;
+  background:rgba(14,16,24,.7);
+  border:1px solid rgba(35,38,58,.75);
+  font-size:12px;
+}
+.cw-dot{ width:8px;height:8px;border-radius:999px;background:#66f2b5; box-shadow:0 0 0 3px rgba(102,242,181,.12); }
+.cw-dot--off{ background:#555; box-shadow:none; }
+.cw-tabs{
+  display:flex;
+  gap:10px;
+  padding:10px;
+  background:rgba(14,16,24,.55);
+  border:1px solid rgba(35,38,58,.75);
+  border-radius:16px;
+  backdrop-filter: blur(10px);
+}
+.cw-tab{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid transparent;
+  background:transparent;
+  color:#a9afc3;
+  cursor:pointer;
+  font-weight:800;
+}
+.cw-tab--active{
+  background:rgba(11,13,20,.85);
+  border-color:rgba(26,29,44,.9);
+  color:#fff;
+}
+.cw-card{
+  background:rgba(14,16,24,.70);
+  border:1px solid rgba(35,38,58,.75);
+  border-radius:18px;
+  box-shadow: 0 18px 60px rgba(0,0,0,.55);
+  backdrop-filter: blur(10px);
+}
+.cw-btn{
+  flex:1;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(35,38,58,.75);
+  background:rgba(11,13,20,.85);
+  color:#fff;
+  font-weight:900;
+}
+.cw-btn--primary{
+  border-color: rgba(93,169,255,.35);
+}
+.cw-btn--disabled{
+  opacity:.45;
+}
+.cw-toast{
+  border-radius:14px;
+  border:1px solid rgba(35,38,58,.75);
+  background:rgba(11,13,20,.85);
+  padding:10px 12px;
+  font-size:13px;
+}
+.cw-strike{
+  width:100%;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-top:10px;
+  padding:14px 14px;
+  border-radius:18px;
+  border:1px solid rgba(35,38,58,.75);
+  background:rgba(7,7,10,.55);
+}
+.cw-strike--base{ border-color: rgba(93,169,255,.35); }
+.cw-strike--hyper{ border-color: rgba(102,242,181,.28); }
+.cw-strike__h{ font-weight:950; font-size:16px; }
+.cw-strike__s{ color:#a9afc3; font-size:12px; margin-top:2px; }
+.cw-pill{
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(243,211,107,.14);
+  border:1px solid rgba(243,211,107,.22);
+  color:#f3d36b;
+  font-weight:950;
+  font-size:12px;
+}
+.cw-mini{
+  padding:12px;
+  border-radius:16px;
+  background:rgba(7,7,10,.55);
+  border:1px solid rgba(35,38,58,.55);
+}
+.cw-rowItem{
+  display:flex; gap:10px; align-items:center;
+  padding:10px 12px;
+  border-radius:14px;
+  background:rgba(7,7,10,.55);
+  border:1px solid rgba(35,38,58,.55);
+}
+`;
