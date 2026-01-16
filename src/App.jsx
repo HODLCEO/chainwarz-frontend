@@ -6,27 +6,33 @@ const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   "https://chainwarz-backend-production.up.railway.app";
 
+// NOTE: We keep contract+chain config here only for sending tx.
+// Leaderboard/Profile identity comes from FID + backend.
 const CHAINS = {
   base: {
     key: "base",
-    chainIdHex: "0x2105",
+    chainIdHex: "0x2105", // 8453
     name: "Base",
     rpcUrl: "https://mainnet.base.org",
     blockExplorer: "https://basescan.org",
     contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
-    // ✅ user requested base strike should be 0.000001337
-    valueWei: 1337000000000n, // 0.000001337 ETH
+
+    // Base strike amount candidates:
+    // You asked to prefer 0.000001337, but if contract requires the “42069” amount
+    // this will auto-fallback via estimateGas.
+    strikeCandidatesWei: [1337000000000n, 1337420690000n],
     strikeLabel: "0.000001337 ETH",
+
     nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   },
   hyperevm: {
     key: "hyperevm",
-    chainIdHex: "0x3e7",
+    chainIdHex: "0x3e7", // 999
     name: "HyperEVM",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     blockExplorer: "https://hyperevmscan.io",
     contractAddress: "0x044A0B2D6eF67F5B82e51ec7229D84C0e83C8f02",
-    valueWei: 133700000000000n, // 0.0001337 HYPE
+    strikeCandidatesWei: [133700000000000n], // 0.0001337 HYPE
     strikeLabel: "0.0001337 HYPE",
     nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
   },
@@ -69,17 +75,18 @@ export default function App() {
   const [currentChainId, setCurrentChainId] = useState(null);
   const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
 
-  // Farcaster context user (fid/username/etc)
+  // Farcaster user context (FID is the key!)
   const [fcUser, setFcUser] = useState(null);
-  const [isInHost, setIsInHost] = useState(false);
 
   // Data
   const [profileCounts, setProfileCounts] = useState({ base: 0, hyperevm: 0 });
-  const [profileIdentity, setProfileIdentity] = useState(null);
+  const [profileIdentity, setProfileIdentity] = useState(null); // displayName, username, pfpUrl, bio, warpcastUrl
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   const totalStrikes = (profileCounts.base || 0) + (profileCounts.hyperevm || 0);
   const currentRank = useMemo(() => getRank(totalStrikes), [totalStrikes]);
+
+  const inMiniApp = !!fcUser?.fid;
 
   const getActiveProvider = () => {
     if (connectedVia === "farcaster" && fcProvider) return fcProvider;
@@ -112,28 +119,32 @@ export default function App() {
     }
   };
 
-  const loadCountsForAddress = async (addr) => {
+  // ✅ Profile: if we have FID, we pull merged wallet counts + identity by FID
+  const loadProfile = async (addr) => {
     try {
+      if (fcUser?.fid) {
+        const r = await fetch(`${BACKEND_URL}/api/profile/by-fid/${fcUser.fid}`);
+        const data = await r.json();
+        setProfileCounts({
+          base: data?.txCount?.base || 0,
+          hyperevm: data?.txCount?.hyperevm || 0,
+        });
+        setProfileIdentity(data?.identity || null);
+        return;
+      }
+
+      // Fallback: by address
+      if (!addr) return;
       const r = await fetch(`${BACKEND_URL}/api/profile/${addr}`);
       const data = await r.json();
       setProfileCounts({
         base: data?.txCount?.base || 0,
         hyperevm: data?.txCount?.hyperevm || 0,
       });
+      setProfileIdentity(data?.identity || null);
     } catch {
       setProfileCounts({ base: 0, hyperevm: 0 });
-    }
-  };
-
-  // ✅ BEST: real Farcaster profile comes from FID (not from wallet address)
-  const loadFarcasterIdentityByFid = async (fid) => {
-    if (!fid) return null;
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/farcaster/user/${fid}`);
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
+      setProfileIdentity(null);
     }
   };
 
@@ -148,10 +159,9 @@ export default function App() {
       // Miniapp context + Farcaster provider
       try {
         const mini = await sdk.isInMiniApp();
-        setIsInHost(!!mini);
-
         if (mini) {
-          // Important ordering: context -> capabilities -> provider -> ready
+          // Context is synchronous; "ready" is the important call
+          await sdk.actions.ready();
           const ctx = sdk.context;
           setFcUser(ctx?.user || null);
 
@@ -160,23 +170,10 @@ export default function App() {
             const p = await sdk.wallet.getEthereumProvider();
             if (p) setFcProvider(p);
           }
-
-          await sdk.actions.ready();
-
-          // If we have an fid, prefetch identity immediately
-          const fid = ctx?.user?.fid;
-          if (fid) {
-            const ident = await loadFarcasterIdentityByFid(fid);
-            if (ident) setProfileIdentity(ident);
-          } else {
-            // fallback: at least keep whatever context provides
-            if (ctx?.user) setProfileIdentity(ctx.user);
-          }
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
 
+      // Load leaderboards immediately
       loadLeaderboards();
     };
 
@@ -184,21 +181,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When profile tab opens, refresh identity again (in case it was slow)
+  // When we enter Profile tab, refresh profile (merged by fid when available)
   useEffect(() => {
-    const run = async () => {
-      if (activeTab !== "profile") return;
-      const fid = fcUser?.fid;
-      if (fid) {
-        const ident = await loadFarcasterIdentityByFid(fid);
-        if (ident) setProfileIdentity(ident);
-      }
-    };
-    run();
+    if (activeTab !== "profile") return;
+    loadProfile(account);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, fcUser?.fid]);
+  }, [activeTab, account, fcUser?.fid]);
 
-  // Connect
   const requestAccounts = async (provider, viaLabel) => {
     if (!provider?.request) {
       setStatus("No wallet provider found.");
@@ -221,20 +210,13 @@ export default function App() {
       setStatus("Connected.");
 
       await refreshChainId();
-      await loadCountsForAddress(addr);
-
-      // If in host, identity should come from fid, regardless of wallet address
-      const fid = fcUser?.fid;
-      if (fid) {
-        const ident = await loadFarcasterIdentityByFid(fid);
-        if (ident) setProfileIdentity(ident);
-      }
+      await loadProfile(addr);
 
       if (provider.on) {
         provider.on("accountsChanged", (accs) => {
           const a = accs?.[0] || null;
           setAccount(a);
-          if (a) loadCountsForAddress(a);
+          if (a) loadProfile(a);
         });
         provider.on("chainChanged", () => refreshChainId());
       }
@@ -280,6 +262,27 @@ export default function App() {
     await refreshChainId();
   };
 
+  // ✅ Auto-pick correct strike amount using estimateGas (prevents “Incorrect strike amount” surprises)
+  const pickStrikeValueHex = async (chainKey, from) => {
+    const chain = CHAINS[chainKey];
+    const p = getActiveProvider();
+
+    for (const wei of chain.strikeCandidatesWei) {
+      const valueHex = "0x" + wei.toString(16);
+      try {
+        await p.request({
+          method: "eth_estimateGas",
+          params: [{ from, to: chain.contractAddress, value: valueHex, data: "0x" }],
+        });
+        return valueHex; // first candidate that estimates successfully
+      } catch {
+        // try next candidate
+      }
+    }
+    // fallback to first candidate (wallet may still show a clear revert)
+    return "0x" + chain.strikeCandidatesWei[0].toString(16);
+  };
+
   const sendStrike = async (chainKey) => {
     const chain = CHAINS[chainKey];
     const p = getActiveProvider();
@@ -299,7 +302,8 @@ export default function App() {
 
       await switchOrAddChain(chainKey);
 
-      const valueHex = "0x" + chain.valueWei.toString(16);
+      setStatus("Checking strike amount…");
+      const valueHex = await pickStrikeValueHex(chainKey, account);
 
       setStatus("Confirm the transaction in your wallet…");
       const hash = await p.request({
@@ -312,7 +316,7 @@ export default function App() {
 
       setTimeout(() => {
         loadLeaderboards();
-        loadCountsForAddress(account);
+        loadProfile(account);
       }, 2500);
     } catch {
       setStatus("Transaction cancelled or failed.");
@@ -327,12 +331,11 @@ export default function App() {
     return `${chain.blockExplorer}/tx/${lastTx.hash}`;
   };
 
-  // Profile display (prefer backend by fid; fallback to sdk.context.user; fallback to address)
+  // --- Profile display priority ---
+  // If miniapp context exists, use it as fallback even if backend identity is missing.
   const displayName =
     profileIdentity?.displayName ||
-    profileIdentity?.display_name ||
-    fcUser?.displayName ||
-    fcUser?.username ||
+    (fcUser?.displayName || fcUser?.username) ||
     (account ? shortAddr(account) : "Unknown");
 
   const username =
@@ -341,78 +344,64 @@ export default function App() {
 
   const pfpUrl =
     profileIdentity?.pfpUrl ||
-    profileIdentity?.pfp_url ||
     fcUser?.pfpUrl ||
     (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
 
   const bio =
-    profileIdentity?.bio ||
-    profileIdentity?.profile?.bio?.text ||
-    fcUser?.bio ||
-    "";
+    profileIdentity?.bio || "";
 
   const warpcastUrl =
     profileIdentity?.warpcastUrl ||
     (profileIdentity?.username ? `https://warpcast.com/${profileIdentity.username}` : null) ||
     (fcUser?.username ? `https://warpcast.com/${fcUser.username}` : null);
 
-  // --- UI / styling ---
   return (
-    <div className="min-h-screen text-white cw-root">
-      <style>{castleCss}</style>
-
+    <div className="min-h-screen bg-black text-white">
       <div className="max-w-md mx-auto p-4">
-        <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="mb-4">
           <div className="flex items-center gap-3">
-            <div className="cw-shieldBadge" aria-hidden>⛨</div>
-            <div>
-              <h1 className="text-3xl font-extrabold tracking-tight">ChainWarZ</h1>
-              <p className="text-gray-300 mt-1 text-sm">Strike chains. Climb ranks. Dominate.</p>
-            </div>
+            <Shield className="text-gray-300" />
+            <h1 className="text-3xl font-extrabold tracking-tight">ChainWarZ</h1>
           </div>
-
-          <div className="text-right">
-            {connectedVia ? (
-              <div className="cw-chip">
-                <span className="cw-dot" />
-                Connected via <b className="ml-1">{connectedVia}</b>
-              </div>
-            ) : (
-              <div className="cw-chip opacity-80">
-                <span className="cw-dot cw-dot--off" />
-                Not connected
-              </div>
-            )}
-            {account ? <div className="mt-2 text-xs text-gray-300">{shortAddr(account)}</div> : null}
-          </div>
+          <p className="text-gray-300 mt-2">Strike chains. Climb ranks. Dominate.</p>
         </div>
 
-        <div className="cw-tabs mb-4">
+        <div className="flex gap-2 mb-4">
           <button
             onClick={() => setActiveTab("game")}
-            className={`cw-tab ${activeTab === "game" ? "cw-tab--active" : ""}`}
+            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
+              activeTab === "game" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
+            }`}
           >
-            <Swords size={16} /> Game
+            <Swords size={18} /> Game
           </button>
           <button
             onClick={() => setActiveTab("profile")}
-            className={`cw-tab ${activeTab === "profile" ? "cw-tab--active" : ""}`}
+            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
+              activeTab === "profile" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
+            }`}
           >
-            <Shield size={16} /> Profile
+            <Shield size={18} /> Profile
           </button>
           <button
             onClick={() => setActiveTab("leaderboard")}
-            className={`cw-tab ${activeTab === "leaderboard" ? "cw-tab--active" : ""}`}
+            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
+              activeTab === "leaderboard" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
+            }`}
           >
-            <Crown size={16} /> Leaderboard
+            <Crown size={18} /> Leaderboard
           </button>
         </div>
 
-        {status ? <div className="cw-toast mb-4">{status}</div> : null}
+        {status ? (
+          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
+            {status}
+          </div>
+        ) : null}
 
         {activeTab === "game" && (
           <div className="space-y-4">
-            <div className="cw-card p-4">
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs text-gray-400">Wallet</div>
@@ -426,7 +415,9 @@ export default function App() {
                 <button
                   onClick={() => requestAccounts(fcProvider, "farcaster")}
                   disabled={!fcProvider || loading}
-                  className={`cw-btn ${fcProvider ? "cw-btn--primary" : "cw-btn--disabled"}`}
+                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
+                    fcProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
+                  }`}
                 >
                   Connect Farcaster
                 </button>
@@ -434,48 +425,44 @@ export default function App() {
                 <button
                   onClick={() => requestAccounts(browserProvider, "browser")}
                   disabled={!browserProvider || loading}
-                  className={`cw-btn ${browserProvider ? "" : "cw-btn--disabled"}`}
+                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
+                    browserProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
+                  }`}
                 >
                   Connect Browser
                 </button>
               </div>
 
-              {isInHost && !fcProvider ? (
-                <div className="mt-2 text-xs text-gray-400">
-                  Host detected, but wallet provider capability not available in this host.
-                </div>
-              ) : null}
+              {connectedVia ? <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div> : null}
+              {inMiniApp ? <div className="mt-1 text-xs text-gray-600">Miniapp identity (FID): {fcUser.fid}</div> : null}
             </div>
 
-            <div className="cw-card p-4">
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="font-bold mb-3">Strike</div>
 
               <button
                 onClick={() => sendStrike("base")}
                 disabled={!account || loading}
-                className="cw-strike cw-strike--base disabled:opacity-50"
+                className="w-full rounded-xl border border-blue-700 bg-blue-950 px-4 py-3 font-extrabold mb-3 disabled:opacity-50"
               >
-                <div>
-                  <div className="cw-strike__h">Base</div>
-                  <div className="cw-strike__s">{CHAINS.base.strikeLabel}</div>
-                </div>
-                <span className="cw-pill">Strike</span>
+                Base — {CHAINS.base.strikeLabel}
               </button>
 
               <button
                 onClick={() => sendStrike("hyperevm")}
                 disabled={!account || loading}
-                className="cw-strike cw-strike--hyper disabled:opacity-50"
+                className="w-full rounded-xl border border-green-700 bg-green-950 px-4 py-3 font-extrabold disabled:opacity-50"
               >
-                <div>
-                  <div className="cw-strike__h">HyperEVM</div>
-                  <div className="cw-strike__s">{CHAINS.hyperevm.strikeLabel}</div>
-                </div>
-                <span className="cw-pill">Strike</span>
+                HyperEVM — {CHAINS.hyperevm.strikeLabel}
               </button>
 
               {lastTx?.hash ? (
-                <a href={explorerTxUrl()} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-sm text-gray-200 underline">
+                <a
+                  href={explorerTxUrl()}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-2 text-sm text-gray-200 underline"
+                >
                   View last tx <ExternalLink size={16} />
                 </a>
               ) : null}
@@ -484,41 +471,46 @@ export default function App() {
         )}
 
         {activeTab === "profile" && (
-          <div className="cw-card p-4">
-            {!account ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+            {!account && !inMiniApp ? (
               <div className="text-gray-300">Connect a wallet to see your strike counts.</div>
             ) : (
               <div className="flex gap-3">
-                {/* ✅ smaller profile picture */}
                 <img
                   src={pfpUrl}
                   alt="pfp"
-                  className="w-14 h-14 rounded-2xl border border-white/10 object-cover"
+                  className="w-14 h-14 rounded-full border border-gray-700 object-cover"
                 />
                 <div className="flex-1 min-w-0">
                   <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
                   <div className="font-bold truncate">{displayName}</div>
-                  {username ? <div className="text-sm text-gray-300/80 truncate">{username}</div> : null}
-                  {bio ? <div className="mt-2 text-sm text-gray-200/90">{bio}</div> : null}
+                  {username ? <div className="text-sm text-gray-400 truncate">{username}</div> : null}
+
+                  {bio ? <div className="mt-2 text-sm text-gray-300">{bio}</div> : null}
 
                   {warpcastUrl ? (
-                    <a href={warpcastUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm text-yellow-200 underline">
+                    <a
+                      href={warpcastUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-flex items-center gap-2 text-sm text-gray-200 underline"
+                    >
                       View on Warpcast <ExternalLink size={16} />
                     </a>
                   ) : null}
 
                   <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                    <div className="cw-mini">
+                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
                       <div className="text-xs text-gray-400">Base strikes</div>
-                      <div className="text-xl font-extrabold">{profileCounts.base}</div>
+                      <div className="font-extrabold">{profileCounts.base}</div>
                     </div>
-                    <div className="cw-mini">
+                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
                       <div className="text-xs text-gray-400">HyperEVM strikes</div>
-                      <div className="text-xl font-extrabold">{profileCounts.hyperevm}</div>
+                      <div className="font-extrabold">{profileCounts.hyperevm}</div>
                     </div>
                   </div>
 
-                  <div className="mt-3 text-xs text-gray-500">Built for Farcaster Mini Apps</div>
+                  <div className="mt-3 text-xs text-gray-600">Running inside host</div>
                 </div>
               </div>
             )}
@@ -527,10 +519,10 @@ export default function App() {
 
         {activeTab === "leaderboard" && (
           <div className="space-y-4">
-            <div className="cw-card p-4">
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="font-extrabold">Base Leaderboard</div>
-                <button className="text-sm underline text-yellow-200" onClick={loadLeaderboards} disabled={loading}>
+                <button className="text-sm underline text-gray-300" onClick={loadLeaderboards} disabled={loading}>
                   Refresh
                 </button>
               </div>
@@ -538,14 +530,32 @@ export default function App() {
               {leaderboard.base?.length ? (
                 <div className="space-y-2">
                   {leaderboard.base.slice(0, 10).map((p) => (
-                    <div key={`b-${p.fid || p.address}`} className="cw-rowItem">
-                      <div className="w-10 text-center font-extrabold text-gray-300">#{p.rank}</div>
-                      <img src={p.pfpUrl} alt="" className="w-9 h-9 rounded-full border border-white/10" />
+                    <div
+                      key={`b-${p.fid ? `fid-${p.fid}` : p.address}`}
+                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
+                    >
+                      <div className="w-8 text-center font-extrabold text-gray-300">#{p.rank}</div>
+
+                      {p.pfpUrl ? (
+                        <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full border border-gray-700 bg-gray-900" />
+                      )}
+
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-100">{p.username || shortAddr(p.address)}</div>
-                        <div className="text-xs text-gray-500 truncate">{p.fid ? `FID ${p.fid}` : shortAddr(p.address)}</div>
+                        <div className="font-bold truncate text-gray-200">
+                          {p.username ? `@${p.username}` : p.displayName ? p.displayName : shortAddr(p.address)}
+                        </div>
+
+                        {/* ✅ IMPORTANT: if this is a Farcaster-merged row, we DO NOT show any wallet address */}
+                        {!p.fid && p.address ? (
+                          <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
+                        ) : p.walletCount > 1 ? (
+                          <div className="text-xs text-gray-500 truncate">{p.walletCount} wallets merged</div>
+                        ) : null}
                       </div>
-                      <div className="font-extrabold text-blue-200">{p.txCount}</div>
+
+                      <div className="font-extrabold text-blue-300">{p.txCount}</div>
                     </div>
                   ))}
                 </div>
@@ -554,10 +564,10 @@ export default function App() {
               )}
             </div>
 
-            <div className="cw-card p-4">
+            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="font-extrabold">HyperEVM Leaderboard</div>
-                <button className="text-sm underline text-yellow-200" onClick={loadLeaderboards} disabled={loading}>
+                <button className="text-sm underline text-gray-300" onClick={loadLeaderboards} disabled={loading}>
                   Refresh
                 </button>
               </div>
@@ -565,14 +575,30 @@ export default function App() {
               {leaderboard.hyperevm?.length ? (
                 <div className="space-y-2">
                   {leaderboard.hyperevm.slice(0, 10).map((p) => (
-                    <div key={`h-${p.fid || p.address}`} className="cw-rowItem">
-                      <div className="w-10 text-center font-extrabold text-gray-300">#{p.rank}</div>
-                      <img src={p.pfpUrl} alt="" className="w-9 h-9 rounded-full border border-white/10" />
+                    <div
+                      key={`h-${p.fid ? `fid-${p.fid}` : p.address}`}
+                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
+                    >
+                      <div className="w-8 text-center font-extrabold text-gray-300">#{p.rank}</div>
+
+                      {p.pfpUrl ? (
+                        <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full border border-gray-700 bg-gray-900" />
+                      )}
+
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-100">{p.username || shortAddr(p.address)}</div>
-                        <div className="text-xs text-gray-500 truncate">{p.fid ? `FID ${p.fid}` : shortAddr(p.address)}</div>
+                        <div className="font-bold truncate text-gray-200">
+                          {p.username ? `@${p.username}` : p.displayName ? p.displayName : shortAddr(p.address)}
+                        </div>
+                        {!p.fid && p.address ? (
+                          <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
+                        ) : p.walletCount > 1 ? (
+                          <div className="text-xs text-gray-500 truncate">{p.walletCount} wallets merged</div>
+                        ) : null}
                       </div>
-                      <div className="font-extrabold text-green-200">{p.txCount}</div>
+
+                      <div className="font-extrabold text-green-300">{p.txCount}</div>
                     </div>
                   ))}
                 </div>
@@ -586,141 +612,3 @@ export default function App() {
     </div>
   );
 }
-
-const castleCss = `
-.cw-root{
-  background:
-    radial-gradient(1200px 600px at 50% -10%, rgba(243,211,107,.12), transparent 60%),
-    radial-gradient(900px 500px at 20% 10%, rgba(93,169,255,.08), transparent 55%),
-    radial-gradient(900px 500px at 80% 20%, rgba(102,242,181,.06), transparent 60%),
-    linear-gradient(180deg, #0b0c12, #07070a);
-  position:relative;
-  overflow:hidden;
-}
-.cw-root:before{
-  content:"";
-  position:absolute;
-  inset:-40px;
-  opacity:.28;
-  background:
-    linear-gradient(90deg, rgba(255,255,255,.05) 2px, transparent 2px) 0 0/120px 60px,
-    linear-gradient(0deg, rgba(255,255,255,.06) 2px, transparent 2px) 0 0/120px 60px,
-    linear-gradient(90deg, rgba(0,0,0,.25) 1px, transparent 1px) 0 0/120px 60px,
-    linear-gradient(90deg, rgba(255,255,255,.05) 2px, transparent 2px) 60px 30px/120px 60px,
-    linear-gradient(0deg, rgba(255,255,255,.06) 2px, transparent 2px) 60px 30px/120px 60px;
-  pointer-events:none;
-}
-.cw-shieldBadge{
-  width:44px;height:44px;border-radius:14px;
-  display:grid;place-items:center;
-  background: linear-gradient(180deg, rgba(243,211,107,.18), rgba(243,211,107,.06));
-  border:1px solid rgba(243,211,107,.22);
-  box-shadow: 0 10px 30px rgba(0,0,0,.35);
-  font-size:20px;
-}
-.cw-chip{
-  display:inline-flex; gap:8px; align-items:center;
-  padding:8px 10px;
-  border-radius:999px;
-  background:rgba(14,16,24,.7);
-  border:1px solid rgba(35,38,58,.75);
-  font-size:12px;
-}
-.cw-dot{ width:8px;height:8px;border-radius:999px;background:#66f2b5; box-shadow:0 0 0 3px rgba(102,242,181,.12); }
-.cw-dot--off{ background:#555; box-shadow:none; }
-.cw-tabs{
-  display:flex;
-  gap:10px;
-  padding:10px;
-  background:rgba(14,16,24,.55);
-  border:1px solid rgba(35,38,58,.75);
-  border-radius:16px;
-  backdrop-filter: blur(10px);
-}
-.cw-tab{
-  flex:1;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  gap:8px;
-  padding:10px 12px;
-  border-radius:12px;
-  border:1px solid transparent;
-  background:transparent;
-  color:#a9afc3;
-  cursor:pointer;
-  font-weight:800;
-}
-.cw-tab--active{
-  background:rgba(11,13,20,.85);
-  border-color:rgba(26,29,44,.9);
-  color:#fff;
-}
-.cw-card{
-  background:rgba(14,16,24,.70);
-  border:1px solid rgba(35,38,58,.75);
-  border-radius:18px;
-  box-shadow: 0 18px 60px rgba(0,0,0,.55);
-  backdrop-filter: blur(10px);
-}
-.cw-btn{
-  flex:1;
-  padding:10px 12px;
-  border-radius:14px;
-  border:1px solid rgba(35,38,58,.75);
-  background:rgba(11,13,20,.85);
-  color:#fff;
-  font-weight:900;
-}
-.cw-btn--primary{
-  border-color: rgba(93,169,255,.35);
-}
-.cw-btn--disabled{
-  opacity:.45;
-}
-.cw-toast{
-  border-radius:14px;
-  border:1px solid rgba(35,38,58,.75);
-  background:rgba(11,13,20,.85);
-  padding:10px 12px;
-  font-size:13px;
-}
-.cw-strike{
-  width:100%;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  margin-top:10px;
-  padding:14px 14px;
-  border-radius:18px;
-  border:1px solid rgba(35,38,58,.75);
-  background:rgba(7,7,10,.55);
-}
-.cw-strike--base{ border-color: rgba(93,169,255,.35); }
-.cw-strike--hyper{ border-color: rgba(102,242,181,.28); }
-.cw-strike__h{ font-weight:950; font-size:16px; }
-.cw-strike__s{ color:#a9afc3; font-size:12px; margin-top:2px; }
-.cw-pill{
-  padding:7px 10px;
-  border-radius:999px;
-  background:rgba(243,211,107,.14);
-  border:1px solid rgba(243,211,107,.22);
-  color:#f3d36b;
-  font-weight:950;
-  font-size:12px;
-}
-.cw-mini{
-  padding:12px;
-  border-radius:16px;
-  background:rgba(7,7,10,.55);
-  border:1px solid rgba(35,38,58,.55);
-}
-.cw-rowItem{
-  display:flex; gap:10px; align-items:center;
-  padding:10px 12px;
-  border-radius:14px;
-  background:rgba(7,7,10,.55);
-  border:1px solid rgba(35,38,58,.55);
-}
-`;
