@@ -1,0 +1,261 @@
+:root{
+  --bg0:#07070a;
+  --bg1:#0b0c12;
+  --card:#0e1018cc;
+  --stroke:#23263a;
+  --stroke2:#1a1d2c;
+  --text:#f3f4f6;
+  --muted:#a9afc3;
+  --gold:#f3d36b;
+  --base:#5da9ff;
+  --hyper:#66f2b5;
+  --shadow: 0 18px 60px rgba(0,0,0,.55);
+}
+
+*{ box-sizing:border-box; }
+html, body { height:100%; margin:0; }
+
+body{
+  background: linear-gradient(180deg, var(--bg1), var(--bg0));
+  color:var(--text);
+  font-family: "Unbounded", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+.cw-root{
+  min-height:100vh;
+  position:relative;
+  overflow:hidden;
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(243,211,107,.10), transparent 60%),
+    radial-gradient(900px 500px at 20% 10%, rgba(93,169,255,.08), transparent 55%),
+    radial-gradient(900px 500px at 80% 20%, rgba(102,242,181,.06), transparent 60%),
+    linear-gradient(180deg, var(--bg1), var(--bg0));
+}
+
+/* Castle brick background (pure CSS) */
+.cw-root:before{
+  content:"";
+  position:absolute;
+  inset:-40px;
+  opacity:.28;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.05) 2px, transparent 2px) 0 0/120px 60px,
+    linear-gradient(0deg, rgba(255,255,255,.06) 2px, transparent 2px) 0 0/120px 60px,
+    linear-gradient(90deg, rgba(0,0,0,.25) 1px, transparent 1px) 0 0/120px 60px,
+    linear-gradient(90deg, rgba(255,255,255,.05) 2px, transparent 2px) 60px 30px/120px 60px,
+    linear-gradient(0deg, rgba(255,255,255,.06) 2px, transparent 2px) 60px 30px/120px 60px;
+  pointer-events:none;
+}
+
+.cw-shell{
+  position:relative;
+  max-width:520px;
+  margin:0 auto;
+  padding:18px 14px 28px;
+}
+
+.cw-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  margin-bottom:14px;
+}
+
+.cw-mark{display:flex; gap:12px; align-items:center;}
+.cw-shieldMark{
+  width:44px;height:44px;border-radius:14px;
+  display:grid;place-items:center;
+  background: linear-gradient(180deg, rgba(243,211,107,.18), rgba(243,211,107,.06));
+  border:1px solid rgba(243,211,107,.22);
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+}
+
+.cw-title{font-size:30px; line-height:1.05; margin:0; letter-spacing:.2px;}
+.cw-subtitle{margin:4px 0 0; color:var(--muted); font-size:13px;}
+
+.cw-connection{ text-align:right; }
+.cw-chip{
+  display:inline-flex; gap:8px; align-items:center;
+  padding:8px 10px;
+  border-radius:999px;
+  background:rgba(14,16,24,.7);
+  border:1px solid var(--stroke);
+  box-shadow: var(--shadow);
+  font-size:12px;
+}
+.cw-dot{ width:8px;height:8px;border-radius:999px;background:var(--hyper); box-shadow:0 0 0 3px rgba(102,242,181,.12); }
+.cw-addr{ margin-top:6px; font-size:12px; color:var(--muted); }
+
+.cw-tabs{
+  display:flex;
+  gap:10px;
+  padding:10px;
+  background:rgba(14,16,24,.55);
+  border:1px solid var(--stroke);
+  border-radius:16px;
+  box-shadow: var(--shadow);
+  margin-bottom:14px;
+}
+.cw-tab{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid transparent;
+  background:transparent;
+  color:var(--muted);
+  cursor:pointer;
+  user-select:none;
+  font-weight:800;
+}
+.cw-tab.active{
+  background:rgba(11,13,20,.8);
+  border-color:var(--stroke2);
+  color:var(--text);
+}
+.cw-tabIcon{ display:inline-flex; }
+
+.cw-grid{ display:grid; gap:14px; }
+
+.cw-card{
+  background:var(--card);
+  border:1px solid var(--stroke);
+  border-radius:18px;
+  padding:14px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+.cw-cardGlow{
+  border-color: rgba(243,211,107,.22);
+  box-shadow: 0 18px 80px rgba(243,211,107,.08), var(--shadow);
+}
+.cw-card h2{ margin:0 0 6px; font-size:16px; letter-spacing:.2px; }
+
+.cw-muted{color:var(--muted); font-size:13px; margin:0;}
+.cw-status{ margin-bottom:14px; }
+
+.cw-row{ display:flex; gap:10px; margin-top:12px; }
+.cw-btn{
+  flex:1;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid var(--stroke);
+  background:rgba(11,13,20,.85);
+  color:var(--text);
+  font-weight:900;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+}
+.cw-btn.primary{ border-color: rgba(93,169,255,.35); }
+.cw-btn.disabled{ opacity:.5; cursor:not-allowed; }
+
+.cw-btnIcon{ display:inline-flex; opacity:.9; }
+
+.cw-divider{ height:1px; background:rgba(35,38,58,.7); margin:14px 0; }
+
+.cw-statRow{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.cw-stat{ padding:10px; border-radius:14px; background:rgba(7,7,10,.55); border:1px solid rgba(35,38,58,.55); }
+.cw-statK{ font-size:12px; color:var(--muted); }
+.cw-statV{ font-size:18px; font-weight:950; margin-top:2px; }
+
+.cw-footNote{ margin-top:10px; font-size:12px; color:rgba(169,175,195,.75); }
+
+.cw-strike{
+  width:100%;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-top:10px;
+  padding:14px 14px;
+  border-radius:18px;
+  border:1px solid var(--stroke);
+  background:rgba(7,7,10,.55);
+  cursor:pointer;
+}
+.cw-strike.disabled{ opacity:.55; cursor:not-allowed; }
+.cw-strikeBase{ border-color: rgba(93,169,255,.35); }
+.cw-strikeHyper{ border-color: rgba(102,242,181,.28); }
+.cw-strikeH{ font-weight:950; font-size:16px; }
+.cw-strikeS{ color:var(--muted); font-size:12px; margin-top:2px; }
+.cw-pill{
+  padding:7px 10px;
+  border-radius:999px;
+  background:rgba(243,211,107,.14);
+  border:1px solid rgba(243,211,107,.22);
+  color:var(--gold);
+  font-weight:900;
+  font-size:12px;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+
+.cw-lastTx{ margin-top:12px; display:flex; gap:10px; align-items:center; justify-content:space-between; }
+.cw-link{ color:var(--gold); font-weight:800; text-decoration:none; }
+.cw-link:hover{ text-decoration:underline; }
+
+.cw-profile{ display:flex; gap:12px; align-items:flex-start; }
+.cw-pfp{
+  width:56px; height:56px;
+  border-radius:18px;
+  object-fit:cover;
+  border:1px solid rgba(255,255,255,.12);
+}
+.cw-profileMain{ flex:1; min-width:0; }
+
+.cw-rank{ font-weight:950; color:var(--gold); }
+.cw-name{ font-size:18px; font-weight:950; margin-top:2px; }
+.cw-handle{ color:var(--muted); font-weight:800; margin-top:4px; }
+.cw-bio{ margin-top:10px; color:var(--text); opacity:.92; font-size:13px; line-height:1.35; }
+
+.cw-two{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
+.cw-mini{ padding:12px; border-radius:16px; background:rgba(7,7,10,.55); border:1px solid rgba(35,38,58,.55); }
+.cw-miniK{ font-size:12px; color:var(--muted); }
+.cw-miniV{ font-size:22px; font-weight:950; margin-top:4px; }
+
+.cw-cardHead{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+.cw-linkBtn{ background:transparent; border:0; color:var(--gold); font-weight:900; cursor:pointer; }
+.cw-linkBtn:disabled{ opacity:.5; cursor:not-allowed; }
+.cw-linkBtn:hover{ text-decoration:underline; }
+
+.cw-list{ display:grid; gap:8px; margin-top:10px; }
+.cw-rowItem{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  padding:10px 12px;
+  border-radius:14px;
+  background:rgba(7,7,10,.55);
+  border:1px solid rgba(35,38,58,.55);
+}
+.cw-rankNum{ width:52px; color:var(--muted); font-weight:950; }
+.cw-avatarSm{
+  width:32px; height:32px; border-radius:999px;
+  object-fit:cover;
+  border:1px solid rgba(255,255,255,.10);
+}
+.cw-rowName{ flex:1; min-width:0; }
+.cw-rowTop{ font-weight:900; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cw-rowSub{ font-size:12px; color:rgba(169,175,195,.70); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cw-rowScore{ font-weight:950; color:var(--gold); }
+.cw-scoreBase{ color: rgba(93,169,255,.95); }
+.cw-scoreHyper{ color: rgba(102,242,181,.95); }
+
+.cw-footer{ margin-top:14px; text-align:center; font-size:12px; opacity:.85; }
+
+/* Rank colors (used by your rank logic) */
+.rank-squire{ color:#cbd5e1; }
+.rank-knight{ color:#93c5fd; }
+.rank-captain{ color:#c4b5fd; }
+.rank-baron{ color:#fcd34d; }
+.rank-duke{ color:#fdba74; }
+.rank-warlord{ color:#fca5a5; }
+.rank-legend{ color:#f9a8d4; }

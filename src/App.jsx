@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Wallet, ExternalLink, Shield, Swords, Crown } from "lucide-react";
 import { sdk } from "@farcaster/miniapp-sdk";
+import "./App.css";
 
 const BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL || "https://chainwarz-backend-production.up.railway.app";
+  import.meta.env.VITE_BACKEND_URL ||
+  "https://chainwarz-backend-production.up.railway.app";
 
 const CHAINS = {
   base: {
@@ -13,15 +15,14 @@ const CHAINS = {
     rpcUrl: "https://mainnet.base.org",
     blockExplorer: "https://basescan.org",
     contractAddress: "0xB2B23e69b9d811D3D43AD473f90A171D18b19aab",
-    // ✅ IMPORTANT: correct amount (prevents "Incorrect strike amount")
-    // 1,337,420,690,000 wei = 0x137647c3250
+    // ✅ correct amount for your current Base contract
     valueWei: 1337420690000n,
     strikeLabel: "0.00000133742069 ETH",
     nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   },
   hyperevm: {
     key: "hyperevm",
-    chainIdHex: "0x3e7", // ✅ 999 (HyperEVM)
+    chainIdHex: "0x3e7", // 999
     name: "HyperEVM",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     blockExplorer: "https://hyperevmscan.io",
@@ -33,13 +34,13 @@ const CHAINS = {
 };
 
 const RANKS = [
-  { name: "Squire", min: 0, className: "text-gray-300" },
-  { name: "Knight", min: 1, className: "text-blue-300" },
-  { name: "Knight Captain", min: 5, className: "text-purple-300" },
-  { name: "Baron", min: 10, className: "text-yellow-300" },
-  { name: "Duke", min: 25, className: "text-orange-300" },
-  { name: "Warlord", min: 50, className: "text-red-300" },
-  { name: "Legendary Champion", min: 100, className: "text-pink-300" },
+  { name: "Squire", min: 0, className: "rank-squire" },
+  { name: "Knight", min: 1, className: "rank-knight" },
+  { name: "Knight Captain", min: 5, className: "rank-captain" },
+  { name: "Baron", min: 10, className: "rank-baron" },
+  { name: "Duke", min: 25, className: "rank-duke" },
+  { name: "Warlord", min: 50, className: "rank-warlord" },
+  { name: "Legendary Champion", min: 100, className: "rank-legend" },
 ];
 
 function getRank(totalStrikes) {
@@ -52,6 +53,17 @@ function getRank(totalStrikes) {
 function shortAddr(a) {
   if (!a) return "";
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
+}
+
+function TabButton({ active, onClick, icon, label }) {
+  return (
+    <button onClick={onClick} className={`cw-tab ${active ? "active" : ""}`}>
+      <span className="cw-tabIcon" aria-hidden>
+        {icon}
+      </span>
+      <span>{label}</span>
+    </button>
+  );
 }
 
 export default function App() {
@@ -69,12 +81,12 @@ export default function App() {
   const [currentChainId, setCurrentChainId] = useState(null);
   const [lastTx, setLastTx] = useState(null); // { chainKey, hash }
 
-  // Farcaster context user (fid/username/etc)
+  // Farcaster context user
   const [fcUser, setFcUser] = useState(null);
 
   // Data
   const [profileCounts, setProfileCounts] = useState({ base: 0, hyperevm: 0 });
-  const [profileIdentity, setProfileIdentity] = useState(null); // displayName, username, pfpUrl, bio, warpcastUrl
+  const [profileIdentity, setProfileIdentity] = useState(null);
   const [leaderboard, setLeaderboard] = useState({ base: [], hyperevm: [] });
 
   const totalStrikes = (profileCounts.base || 0) + (profileCounts.hyperevm || 0);
@@ -83,7 +95,7 @@ export default function App() {
   const getActiveProvider = () => {
     if (connectedVia === "farcaster" && fcProvider) return fcProvider;
     if (connectedVia === "browser" && browserProvider) return browserProvider;
-    // If user hasn't chosen yet, prefer Farcaster provider in-host
+    // Prefer Farcaster provider in-host
     if (fcProvider) return fcProvider;
     return browserProvider || null;
   };
@@ -126,7 +138,6 @@ export default function App() {
   };
 
   const loadFarcasterIdentity = async () => {
-    // Best identity path: fid -> backend -> neynar
     try {
       const fid = fcUser?.fid;
       if (!fid) return null;
@@ -134,8 +145,7 @@ export default function App() {
       const res = await fetch(`${BACKEND_URL}/api/farcaster/user/${fid}`);
       if (!res.ok) return null;
 
-      const data = await res.json();
-      return data;
+      return await res.json();
     } catch {
       return null;
     }
@@ -165,7 +175,6 @@ export default function App() {
         }
       } catch {}
 
-      // Load leaderboards immediately
       loadLeaderboards();
     };
 
@@ -173,7 +182,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When profile tab is opened, try to load identity (pfp/bio/link)
+  // When profile tab is opened, try to load identity
   useEffect(() => {
     const run = async () => {
       if (activeTab !== "profile") return;
@@ -184,7 +193,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, fcUser?.fid]);
 
-  // Connect
   const requestAccounts = async (provider, viaLabel) => {
     if (!provider?.request) {
       setStatus("No wallet provider found.");
@@ -193,7 +201,11 @@ export default function App() {
 
     try {
       setLoading(true);
-      setStatus(viaLabel === "farcaster" ? "Connecting Farcaster wallet…" : "Connecting browser wallet…");
+      setStatus(
+        viaLabel === "farcaster"
+          ? "Connecting Farcaster wallet…"
+          : "Connecting browser wallet…"
+      );
 
       const accounts = await provider.request({ method: "eth_requestAccounts" });
       const addr = accounts?.[0];
@@ -209,7 +221,6 @@ export default function App() {
       await refreshChainId();
       await loadCountsForAddress(addr);
 
-      // Load Farcaster identity if available
       const ident = await loadFarcasterIdentity();
       if (ident) setProfileIdentity(ident);
 
@@ -242,7 +253,6 @@ export default function App() {
         params: [{ chainId: chain.chainIdHex }],
       });
     } catch (err) {
-      // If chain not added, add it
       if (err?.code === 4902) {
         await p.request({
           method: "wallet_addEthereumChain",
@@ -298,7 +308,7 @@ export default function App() {
         loadLeaderboards();
         loadCountsForAddress(account);
       }, 2500);
-    } catch (e) {
+    } catch {
       setStatus("Transaction cancelled or failed.");
     } finally {
       setLoading(false);
@@ -311,9 +321,7 @@ export default function App() {
     return `${chain.blockExplorer}/tx/${lastTx.hash}`;
   };
 
-  // Profile display priority:
-  // - If backend returns real Farcaster identity (bio/pfp/link), use it.
-  // - Else show a simple fallback from address.
+  // Identity display priority
   const displayName =
     profileIdentity?.displayName ||
     profileIdentity?.display_name ||
@@ -330,236 +338,307 @@ export default function App() {
     fcUser?.pfpUrl ||
     (account ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${account}` : "");
 
-  const bio =
-    profileIdentity?.bio ||
-    profileIdentity?.profile?.bio?.text ||
-    "";
+  const bio = profileIdentity?.bio || profileIdentity?.profile?.bio?.text || "";
 
   const warpcastUrl =
     profileIdentity?.warpcastUrl ||
     (profileIdentity?.username ? `https://warpcast.com/${profileIdentity.username}` : null) ||
     (fcUser?.username ? `https://warpcast.com/${fcUser.username}` : null);
 
+  const connectedLabel = account ? (connectedVia || "host") : "not connected";
+
   return (
-    <div className="min-h-screen bg-black text-white">
-      <div className="max-w-md mx-auto p-4">
-        <div className="mb-4">
-          <div className="flex items-center gap-3">
-            <Shield className="text-gray-300" />
-            <h1 className="text-3xl font-extrabold tracking-tight">ChainWarZ</h1>
+    <div className="cw-root">
+      <div className="cw-shell">
+        {/* HEADER */}
+        <header className="cw-header">
+          <div className="cw-mark">
+            <div className="cw-shieldMark" aria-hidden>
+              <Shield size={18} />
+            </div>
+            <div>
+              <h1 className="cw-title">ChainWarZ</h1>
+              <p className="cw-subtitle">Strike chains. Climb ranks. Dominate.</p>
+            </div>
           </div>
-          <p className="text-gray-300 mt-2">Strike chains. Climb ranks. Dominate.</p>
-        </div>
 
-        <div className="flex gap-2 mb-4">
-          <button
+          <div className="cw-connection">
+            <div className="cw-chip">
+              <span className="cw-dot" />
+              <span>
+                Connected via <b>{connectedLabel}</b>
+              </span>
+            </div>
+            <div className="cw-addr">{account ? shortAddr(account) : "—"}</div>
+          </div>
+        </header>
+
+        {/* TABS */}
+        <nav className="cw-tabs" aria-label="Primary">
+          <TabButton
+            active={activeTab === "game"}
             onClick={() => setActiveTab("game")}
-            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
-              activeTab === "game" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
-            }`}
-          >
-            <Swords size={18} /> Game
-          </button>
-          <button
+            icon={<Swords size={16} />}
+            label="Game"
+          />
+          <TabButton
+            active={activeTab === "profile"}
             onClick={() => setActiveTab("profile")}
-            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
-              activeTab === "profile" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
-            }`}
-          >
-            <Shield size={18} /> Profile
-          </button>
-          <button
+            icon={<Shield size={16} />}
+            label="Profile"
+          />
+          <TabButton
+            active={activeTab === "leaderboard"}
             onClick={() => setActiveTab("leaderboard")}
-            className={`flex-1 rounded-lg px-3 py-2 font-bold flex items-center justify-center gap-2 border ${
-              activeTab === "leaderboard" ? "bg-gray-900 border-gray-700" : "bg-black border-gray-900 text-gray-300"
-            }`}
-          >
-            <Crown size={18} /> Leaderboard
-          </button>
-        </div>
+            icon={<Crown size={16} />}
+            label="Leaderboard"
+          />
+        </nav>
 
+        {/* STATUS */}
         {status ? (
-          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200">
-            {status}
+          <div className="cw-card cw-status">
+            <p className="cw-muted">{status}</p>
           </div>
         ) : null}
 
+        {/* GAME */}
         {activeTab === "game" && (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-gray-400">Wallet</div>
-                  <div className="font-bold">{account ? shortAddr(account) : "Not connected"}</div>
-                  {currentChainId ? <div className="text-xs text-gray-400 mt-1">Chain: {currentChainId}</div> : null}
-                </div>
-                <Wallet className="text-gray-300" />
-              </div>
+          <main className="cw-grid">
+            <section className="cw-card">
+              <h2>Connect</h2>
+              <p className="cw-muted">
+                Farcaster wallet (in-host) or Browser wallet.
+              </p>
 
-              <div className="mt-3 flex gap-2">
+              <div className="cw-row">
                 <button
+                  className={`cw-btn primary ${!fcProvider ? "disabled" : ""}`}
                   onClick={() => requestAccounts(fcProvider, "farcaster")}
                   disabled={!fcProvider || loading}
-                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
-                    fcProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
-                  }`}
                 >
+                  <span className="cw-btnIcon" aria-hidden>
+                    <Wallet size={16} />
+                  </span>
                   Connect Farcaster
                 </button>
 
                 <button
+                  className={`cw-btn ${!browserProvider ? "disabled" : ""}`}
                   onClick={() => requestAccounts(browserProvider, "browser")}
                   disabled={!browserProvider || loading}
-                  className={`flex-1 rounded-lg px-3 py-2 font-bold border ${
-                    browserProvider ? "border-gray-700 bg-gray-900" : "border-gray-900 bg-black text-gray-600"
-                  }`}
                 >
+                  <span className="cw-btnIcon" aria-hidden>
+                    <Wallet size={16} />
+                  </span>
                   Connect Browser
                 </button>
               </div>
 
-              {connectedVia ? <div className="mt-2 text-xs text-gray-400">Connected via: {connectedVia}</div> : null}
-            </div>
+              <div className="cw-divider" />
 
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="font-bold mb-3">Strike</div>
+              <div className="cw-statRow">
+                <div className="cw-stat">
+                  <div className="cw-statK">Total strikes</div>
+                  <div className="cw-statV">{totalStrikes}</div>
+                </div>
+                <div className="cw-stat">
+                  <div className="cw-statK">Current rank</div>
+                  <div className={`cw-statV ${currentRank.className}`}>
+                    {currentRank.name}
+                  </div>
+                </div>
+              </div>
+
+              {currentChainId ? (
+                <div className="cw-footNote">Chain: {currentChainId}</div>
+              ) : null}
+            </section>
+
+            <section className="cw-card cw-cardGlow">
+              <h2>Strike</h2>
+              <p className="cw-muted">Send a tiny value to record your strike.</p>
 
               <button
                 onClick={() => sendStrike("base")}
                 disabled={!account || loading}
-                className="w-full rounded-xl border border-blue-700 bg-blue-950 px-4 py-3 font-extrabold mb-3 disabled:opacity-50"
+                className={`cw-strike cw-strikeBase ${!account ? "disabled" : ""}`}
               >
-                Base — {CHAINS.base.strikeLabel}
+                <div>
+                  <div className="cw-strikeH">Base</div>
+                  <div className="cw-strikeS">{CHAINS.base.strikeLabel}</div>
+                </div>
+                <span className="cw-pill">
+                  <Swords size={14} /> Strike
+                </span>
               </button>
 
               <button
                 onClick={() => sendStrike("hyperevm")}
                 disabled={!account || loading}
-                className="w-full rounded-xl border border-green-700 bg-green-950 px-4 py-3 font-extrabold disabled:opacity-50"
+                className={`cw-strike cw-strikeHyper ${!account ? "disabled" : ""}`}
               >
-                HyperEVM — {CHAINS.hyperevm.strikeLabel}
+                <div>
+                  <div className="cw-strikeH">HyperEVM</div>
+                  <div className="cw-strikeS">{CHAINS.hyperevm.strikeLabel}</div>
+                </div>
+                <span className="cw-pill">
+                  <Swords size={14} /> Strike
+                </span>
               </button>
 
               {lastTx?.hash ? (
-                <a
-                  href={explorerTxUrl()}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-flex items-center gap-2 text-sm text-gray-200 underline"
-                >
-                  View last tx <ExternalLink size={16} />
-                </a>
-              ) : null}
-            </div>
-          </div>
-        )}
-
-        {activeTab === "profile" && (
-          <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-            {!account ? (
-              <div className="text-gray-300">Connect a wallet to see your strike counts.</div>
-            ) : (
-              <div className="flex gap-3">
-                {/* ✅ smaller profile picture (about ~55% of the previous size) */}
-                <img
-                  src={pfpUrl}
-                  alt="pfp"
-                  className="w-14 h-14 rounded-full border border-gray-700 object-cover"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className={`font-extrabold ${currentRank.className}`}>{currentRank.name}</div>
-                  <div className="font-bold truncate">{displayName}</div>
-                  {username ? <div className="text-sm text-gray-400 truncate">{username}</div> : null}
-
-                  {bio ? <div className="mt-2 text-sm text-gray-300">{bio}</div> : null}
-
-                  {warpcastUrl ? (
-                    <a
-                      href={warpcastUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-flex items-center gap-2 text-sm text-gray-200 underline"
-                    >
-                      View on Warpcast <ExternalLink size={16} />
-                    </a>
-                  ) : null}
-
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
-                      <div className="text-xs text-gray-400">Base strikes</div>
-                      <div className="font-extrabold">{profileCounts.base}</div>
-                    </div>
-                    <div className="rounded-lg border border-gray-800 bg-black px-3 py-2">
-                      <div className="text-xs text-gray-400">HyperEVM strikes</div>
-                      <div className="font-extrabold">{profileCounts.hyperevm}</div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 text-xs text-gray-600">Running inside host</div>
+                <div className="cw-lastTx">
+                  <span className="cw-muted">Last tx</span>
+                  <a
+                    className="cw-link"
+                    href={explorerTxUrl()}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {shortAddr(lastTx.hash)} <ExternalLink size={14} />
+                  </a>
                 </div>
-              </div>
-            )}
-          </div>
+              ) : null}
+            </section>
+          </main>
         )}
 
+        {/* PROFILE */}
+        {activeTab === "profile" && (
+          <main className="cw-card">
+            {!account ? (
+              <p className="cw-muted">Connect a wallet to see your profile.</p>
+            ) : (
+              <>
+                <div className="cw-profile">
+                  {/* Smaller PFP (40–60% vibe) */}
+                  <img
+                    src={pfpUrl}
+                    alt="pfp"
+                    className="cw-pfp"
+                    style={{ width: 56, height: 56 }}
+                  />
+
+                  <div className="cw-profileMain">
+                    <div className={`cw-rank ${currentRank.className}`}>
+                      {currentRank.name}
+                    </div>
+
+                    <div className="cw-name">{displayName}</div>
+
+                    {username ? (
+                      <div className="cw-handle">{username}</div>
+                    ) : null}
+
+                    {bio ? <div className="cw-bio">{bio}</div> : null}
+
+                    {warpcastUrl ? (
+                      <a
+                        className="cw-link"
+                        href={warpcastUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View on Warpcast <ExternalLink size={14} />
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="cw-divider" />
+
+                <div className="cw-two">
+                  <div className="cw-mini">
+                    <div className="cw-miniK">Base strikes</div>
+                    <div className="cw-miniV">{profileCounts.base}</div>
+                  </div>
+                  <div className="cw-mini">
+                    <div className="cw-miniK">HyperEVM strikes</div>
+                    <div className="cw-miniV">{profileCounts.hyperevm}</div>
+                  </div>
+                </div>
+
+                <div className="cw-footNote">Running inside host</div>
+              </>
+            )}
+          </main>
+        )}
+
+        {/* LEADERBOARD */}
         {activeTab === "leaderboard" && (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="font-extrabold">Base Leaderboard</div>
-                <button className="text-sm underline text-gray-300" onClick={loadLeaderboards} disabled={loading}>
+          <main className="cw-grid">
+            <section className="cw-card">
+              <div className="cw-cardHead">
+                <h2>Base Leaderboard</h2>
+                <button className="cw-linkBtn" onClick={loadLeaderboards} disabled={loading}>
                   Refresh
                 </button>
               </div>
 
               {leaderboard.base?.length ? (
-                <div className="space-y-2">
+                <div className="cw-list">
                   {leaderboard.base.slice(0, 10).map((p) => (
-                    <div
-                      key={`b-${p.address}`}
-                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
-                    >
-                      <div className="w-6 text-center font-extrabold text-gray-300">{p.rank}</div>
-                      <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-200">{p.username || shortAddr(p.address)}</div>
-                        <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
+                    <div key={`b-${p.address}`} className="cw-rowItem">
+                      <div className="cw-rankNum">#{p.rank}</div>
+                      <img
+                        src={p.pfpUrl}
+                        alt=""
+                        className="cw-avatarSm"
+                      />
+                      <div className="cw-rowName">
+                        <div className="cw-rowTop">
+                          {p.username || shortAddr(p.address)}
+                        </div>
+                        <div className="cw-rowSub">{shortAddr(p.address)}</div>
                       </div>
-                      <div className="font-extrabold text-blue-300">{p.txCount}</div>
+                      <div className="cw-rowScore cw-scoreBase">{p.txCount}</div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-gray-400 text-sm">No data yet.</div>
+                <p className="cw-muted">No data yet.</p>
               )}
-            </div>
+            </section>
 
-            <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-              <div className="font-extrabold mb-3">HyperEVM Leaderboard</div>
+            <section className="cw-card">
+              <div className="cw-cardHead">
+                <h2>HyperEVM Leaderboard</h2>
+                <button className="cw-linkBtn" onClick={loadLeaderboards} disabled={loading}>
+                  Refresh
+                </button>
+              </div>
 
               {leaderboard.hyperevm?.length ? (
-                <div className="space-y-2">
+                <div className="cw-list">
                   {leaderboard.hyperevm.slice(0, 10).map((p) => (
-                    <div
-                      key={`h-${p.address}`}
-                      className="flex items-center gap-3 rounded-lg border border-gray-800 bg-black px-3 py-2"
-                    >
-                      <div className="w-6 text-center font-extrabold text-gray-300">{p.rank}</div>
-                      <img src={p.pfpUrl} alt="" className="w-8 h-8 rounded-full border border-gray-700" />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold truncate text-gray-200">{p.username || shortAddr(p.address)}</div>
-                        <div className="text-xs text-gray-500 truncate">{shortAddr(p.address)}</div>
+                    <div key={`h-${p.address}`} className="cw-rowItem">
+                      <div className="cw-rankNum">#{p.rank}</div>
+                      <img
+                        src={p.pfpUrl}
+                        alt=""
+                        className="cw-avatarSm"
+                      />
+                      <div className="cw-rowName">
+                        <div className="cw-rowTop">
+                          {p.username || shortAddr(p.address)}
+                        </div>
+                        <div className="cw-rowSub">{shortAddr(p.address)}</div>
                       </div>
-                      <div className="font-extrabold text-green-300">{p.txCount}</div>
+                      <div className="cw-rowScore cw-scoreHyper">{p.txCount}</div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-gray-400 text-sm">No data yet.</div>
+                <p className="cw-muted">No data yet.</p>
               )}
-            </div>
-          </div>
+            </section>
+          </main>
         )}
+
+        <footer className="cw-footer">
+          <span className="cw-muted">Built for Farcaster Mini Apps</span>
+        </footer>
       </div>
     </div>
   );
